@@ -1,0 +1,11 @@
+{
+  "symbol": "AAPL",
+  "companyName": "Apple Inc.",
+  "currency": "USD",
+  "exchangeShortName": "NASDAQ",
+  "sector": "Technology",
+  "industry": "Consumer Electronics",
+  "country": "US",
+  "mktCap": 3500000000000,
+  "price": 227.5
+}

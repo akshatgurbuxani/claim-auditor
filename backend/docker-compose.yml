@@ -1,0 +1,22 @@
+services:
+  streamlit:
+    build: .
+    environment:
+      MODE: streamlit
+      FMP_API_KEY: ${FMP_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+
+  api:
+    build: .
+    environment:
+      MODE: api
+      FMP_API_KEY: ${FMP_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data

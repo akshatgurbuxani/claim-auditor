@@ -1,0 +1,24 @@
+Microsoft Corporation Q2 FY2026 Earnings Call Transcript
+Date: January 29, 2026
+
+Satya Nadella, CEO:
+
+Thank you, and good afternoon everyone. We had an exceptional second quarter, with revenue of $81.3 billion, driven by continued strong demand for our cloud and AI services.
+
+Our gross margin was 68%, generating gross profit of $55.3 billion. Azure and cloud services continued to see robust growth, and our Copilot products are gaining significant enterprise traction.
+
+We invested heavily in R&D as we continue to build out our AI infrastructure and integrate intelligence across all our products.
+
+Amy Hood, CFO:
+
+Revenue of $81.3 billion increased significantly year over year. Operating income was $38.3 billion, and net income was $38.5 billion. Diluted earnings per share were $5.16.
+
+Our operating cash flow was $35.8 billion, and free cash flow was $5.9 billion. The lower free cash flow this quarter reflects significant capital expenditures as we expand our cloud and AI data center capacity globally.
+
+On the balance sheet, we ended the quarter with $24.3 billion in cash, total assets of $665.3 billion, and total debt of $57.6 billion. Stockholders' equity was $390.9 billion.
+
+Analyst Q&A:
+
+Analyst: Amy, can you comment on the CapEx trajectory?
+
+Amy Hood: Yes, we're investing heavily in AI infrastructure. The capital expenditure level reflects our commitment to meeting the surging demand for Azure AI services. We expect CapEx to remain elevated in the near term.
