@@ -689,12 +689,32 @@ streamlit run streamlit_app.py --server.port 8501
 
 ## Running Tests
 
-### Unit Tests (Fast, No API Keys)
+All commands run from `backend/` with virtual environment activated:
 
 ```bash
 cd backend
 source .venv/bin/activate
+```
 
+### Quick Start
+
+```bash
+# Run all unit tests (default - excludes integration tests)
+pytest
+
+# Run only unit tests explicitly
+pytest tests/unit
+
+# Run with verbose output
+pytest -v
+
+# Run with coverage report
+pytest --cov=app --cov-report=term-missing
+```
+
+### Unit Tests (Fast, No API Keys)
+
+```bash
 # Run all unit tests
 python -m pytest tests/unit/ -v
 
