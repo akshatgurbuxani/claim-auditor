@@ -104,13 +104,15 @@ class DiscrepancyAnalyzer:
         vals = list(q_acc.values())
         if len(vals) >= 3 and vals[-1] < vals[0] - 0.05:
             trend = "; ".join(f"{q}: {v:.1%}" for q, v in q_acc.items())
+            # Round accuracy values for clean display
+            q_acc_rounded = {q: round(v, 4) for q, v in q_acc.items()}
             return [DiscrepancyPattern(
                 company_id=cid,
                 pattern_type=PatternType.INCREASING_INACCURACY,
                 description=f"Claim accuracy declining over time ({trend}).",
                 affected_quarters=sorted(q_acc),
                 severity=round(abs(vals[-1] - vals[0]), 2),
-                evidence=[f"Accuracy trend: {q_acc}"],
+                evidence=[f"Accuracy trend: {q_acc_rounded}"],
             )]
         return []
 

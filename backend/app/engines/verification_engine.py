@@ -8,12 +8,14 @@ import logging
 from typing import Optional
 
 from app.config import Settings
+from app.domain.scoring import accuracy_score
+from app.domain.verdicts import assign_verdict
 from app.engines.metric_mapper import MetricMapper
 from app.models.claim import ClaimModel
 from app.models.financial_data import FinancialDataModel
 from app.repositories.financial_data_repo import FinancialDataRepository
 from app.schemas.verification import MisleadingFlag, Verdict, VerificationCreate
-from app.utils.financial_math import accuracy_score, normalize_to_unit, percentage_difference
+from app.utils.financial_math import normalize_to_unit, percentage_difference
 
 logger = logging.getLogger(__name__)
 
@@ -189,23 +191,13 @@ class VerificationEngine:
         )
 
     def _verdict(self, score: float, flags: list[MisleadingFlag]) -> Verdict:
-        if score >= 1 - self.tol_verified:        # ≥ 0.98
-            v = Verdict.VERIFIED
-        elif score >= 1 - self.tol_approx:         # ≥ 0.90
-            v = Verdict.APPROXIMATELY_CORRECT
-        elif score >= 1 - self.tol_misleading:     # ≥ 0.75
-            v = Verdict.MISLEADING
-        else:
-            v = Verdict.INCORRECT
-
-        # Non-numeric misleading flags can upgrade an otherwise-OK verdict
-        if flags and v in (Verdict.VERIFIED, Verdict.APPROXIMATELY_CORRECT):
-            # Only upgrade if there are substantive flags (not just rounding)
-            substantive = [f for f in flags if f != MisleadingFlag.ROUNDING_BIAS]
-            if substantive:
-                v = Verdict.MISLEADING
-
-        return v
+        return assign_verdict(
+            accuracy_score=score,
+            misleading_flags=flags,
+            tolerance_verified=self.tol_verified,
+            tolerance_approx=self.tol_approx,
+            tolerance_misleading=self.tol_misleading,
+        )
 
     def _check_misleading(
         self,

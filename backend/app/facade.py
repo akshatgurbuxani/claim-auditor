@@ -79,8 +79,16 @@ class PipelineFacade:
     def _setup_clients(self) -> None:
         s = self._settings
         cache_dir = Path(s.database_url.replace("sqlite:///", "")).parent / "fmp_cache"
-        self._fmp = FMPClient(api_key=s.fmp_api_key, cache_dir=cache_dir)
-        self._llm = LLMClient(api_key=s.anthropic_api_key, model=s.claude_model)
+        self._fmp = FMPClient(
+            api_key=s.fmp_api_key,
+            cache_dir=cache_dir,
+            retry_max_attempts=s.retry_max_attempts,
+        )
+        self._llm = LLMClient(
+            api_key=s.anthropic_api_key,
+            model=s.claude_model,
+            retry_max_attempts=s.retry_max_attempts,
+        )
 
     # ══════════════════════════════════════════════════════════════════
     # PIPELINE EXECUTION
@@ -261,6 +269,66 @@ class PipelineFacade:
             }
             for p in patterns
         ]
+
+    def get_top_discrepancies(
+        self,
+        ticker: str,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Return top discrepancies (misleading/incorrect claims) for a company."""
+        company = self._company_repo.get_by_ticker(ticker)
+        if not company:
+            return []
+
+        claims = self._claim_repo.get_for_company(company.id)
+        bad_claims = [
+            c for c in claims
+            if c.verification and c.verification.verdict in ("misleading", "incorrect")
+        ]
+
+        # Sort by accuracy score (worst first)
+        bad_claims.sort(key=lambda c: c.verification.accuracy_score if c.verification else 1.0)
+
+        return [
+            {
+                "claim_text": c.claim_text,
+                "speaker": c.speaker,
+                "metric": c.metric,
+                "metric_type": c.metric_type,
+                "stated_value": c.stated_value,
+                "unit": c.unit,
+                "quarter": f"Q{c.transcript.quarter} {c.transcript.year}",
+                "verdict": c.verification.verdict,
+                "actual_value": c.verification.actual_value,
+                "accuracy_score": c.verification.accuracy_score,
+                "explanation": c.verification.explanation,
+                "misleading_flags": c.verification.misleading_flags,
+                "context_snippet": c.context_snippet,
+                "comparison_period": c.comparison_period,
+                "comparison_basis": c.comparison_basis,
+                "is_gaap": c.is_gaap,
+                "segment": c.segment,
+                "confidence": c.confidence,
+            }
+            for c in bad_claims[:limit]
+        ]
+
+    def get_all_patterns_grouped(self) -> Dict[int, List[Dict[str, Any]]]:
+        """Return all discrepancy patterns grouped by company_id."""
+        patterns = self._pattern_repo.get_all_grouped()
+        return {
+            company_id: [
+                {
+                    "pattern_type": p.pattern_type,
+                    "description": p.description,
+                    "affected_quarters": p.affected_quarters,
+                    "severity": p.severity,
+                    "evidence": p.evidence,
+                }
+                for p in pattern_list
+            ]
+            for company_id, pattern_list in patterns.items()
+        }
 
     # ── lifecycle ─────────────────────────────────────────────────────
 

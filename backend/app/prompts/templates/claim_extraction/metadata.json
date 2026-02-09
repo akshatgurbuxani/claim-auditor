@@ -1,0 +1,12 @@
+{
+  "v1": {
+    "created": "2026-01-15",
+    "description": "Initial production prompt for claim extraction",
+    "model": "claude-sonnet-4-20250514",
+    "expected_output_format": "json_array",
+    "max_tokens": 8192,
+    "temperature": 0.0,
+    "author": "founding-engineer",
+    "notes": "Handles revenue, EPS, margins, cash flow. GAAP/non-GAAP detection. Segment-level claims."
+  }
+}

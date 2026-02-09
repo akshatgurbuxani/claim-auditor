@@ -2,7 +2,8 @@
 
 import pytest
 
-from app.engines.claim_extractor import ClaimExtractor, _METRIC_ALIASES
+from app.engines.claim_extractor import ClaimExtractor
+from app.domain.metrics import normalize_metric_name
 from app.clients.llm_client import LLMClient
 
 
@@ -18,19 +19,19 @@ class FakeLLMClient:
 
 class TestNormalizeMetric:
     def test_common_aliases(self):
-        assert ClaimExtractor._normalize_metric("total revenue") == "revenue"
-        assert ClaimExtractor._normalize_metric("earnings per share") == "eps"
-        assert ClaimExtractor._normalize_metric("FCF") == "free_cash_flow"
-        assert ClaimExtractor._normalize_metric("op margin") == "operating_margin"
-        assert ClaimExtractor._normalize_metric("Net Revenue") == "revenue"
-        assert ClaimExtractor._normalize_metric("SG&A") == "selling_general_admin"
+        assert normalize_metric_name("total revenue") == "revenue"
+        assert normalize_metric_name("earnings per share") == "eps"
+        assert normalize_metric_name("FCF") == "free_cash_flow"
+        assert normalize_metric_name("op margin") == "operating_margin"
+        assert normalize_metric_name("Net Revenue") == "revenue"
+        assert normalize_metric_name("SG&A") == "selling_general_admin"
 
     def test_already_canonical(self):
-        assert ClaimExtractor._normalize_metric("revenue") == "revenue"
-        assert ClaimExtractor._normalize_metric("operating_income") == "operating_income"
+        assert normalize_metric_name("revenue") == "revenue"
+        assert normalize_metric_name("operating_income") == "operating_income"
 
     def test_unknown_passthrough(self):
-        assert ClaimExtractor._normalize_metric("subscriber_count") == "subscriber_count"
+        assert normalize_metric_name("subscriber_count") == "subscriber_count"
 
 
 class TestDedup:

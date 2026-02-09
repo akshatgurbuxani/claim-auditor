@@ -12,11 +12,11 @@ build/
 # Environment variables
 .env
 
-# Database
-*.db
-
 # FMP cache
-data/fmp_cache/
+backend/data/fmp_cache/
+
+# transcripts
+backend/data/transcripts/
 
 # IDE
 .vscode/

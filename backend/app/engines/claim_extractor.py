@@ -1,107 +1,46 @@
 """Extracts quantitative claims from earnings-call transcripts via LLM.
 
-The system prompt is carefully crafted and is the core IP of the extraction.
+The prompts are managed by PromptManager and versioned separately.
 """
 
 import logging
 from typing import List
 
 from app.clients.llm_client import LLMClient
+from app.domain.metrics import normalize_metric_name
+from app.prompts.manager import PromptManager
 from app.schemas.claim import ClaimCreate, ComparisonPeriod, MetricType
 
 logger = logging.getLogger(__name__)
-
-# ── Canonical metric name aliases ────────────────────────────────────────
-
-_METRIC_ALIASES: dict[str, str] = {
-    "total revenue": "revenue",
-    "net revenue": "revenue",
-    "net revenues": "revenue",
-    "sales": "revenue",
-    "net sales": "revenue",
-    "top line": "revenue",
-    "earnings per share": "eps",
-    "diluted eps": "eps_diluted",
-    "diluted earnings per share": "eps_diluted",
-    "basic eps": "eps",
-    "op income": "operating_income",
-    "operating profit": "operating_income",
-    "operating loss": "operating_income",
-    "op margin": "operating_margin",
-    "gross margin": "gross_margin",
-    "gross profit margin": "gross_margin",
-    "net margin": "net_margin",
-    "profit margin": "net_margin",
-    "fcf": "free_cash_flow",
-    "capex": "capital_expenditure",
-    "capital expenditures": "capital_expenditure",
-    "r&d": "research_and_development",
-    "research and development": "research_and_development",
-    "sg&a": "selling_general_admin",
-    "sga": "selling_general_admin",
-    "cash": "cash_and_equivalents",
-    "cash and cash equivalents": "cash_and_equivalents",
-    "debt": "total_debt",
-    "long-term debt": "total_debt",
-    "stockholders equity": "shareholders_equity",
-    "shareholders equity": "shareholders_equity",
-    "total stockholders equity": "shareholders_equity",
-}
 
 
 class ClaimExtractor:
     """Two-step claim extraction: LLM → validate → deduplicate."""
 
-    SYSTEM_PROMPT = '''You are a financial analyst AI that extracts quantitative claims from earnings call transcripts.
+    def __init__(
+        self,
+        llm_client: LLMClient,
+        prompt_version: str = "latest",
+    ):
+        """Initialize claim extractor with LLM client and prompt version.
 
-A "quantitative claim" is any statement by management that includes a specific number, percentage, or measurable comparison about the company's financial performance.
-
-EXTRACT claims that include:
-- Revenue figures or growth rates
-- Earnings per share (EPS)
-- Profit margins (gross, operating, net)
-- Cash flow figures (operating cash flow, free cash flow)
-- Growth rates (YoY, QoQ)
-- EBITDA
-- Expense figures (R&D, SG&A)
-- Balance sheet items (debt, cash, assets)
-
-DO NOT extract:
-- Vague qualitative statements ("strong performance", "solid results")
-- Forward-looking guidance without a specific number
-- Analyst questions — only management/executive statements
-- Non-financial operational metrics unless clearly tied to dollars/percentages
-- Share count or buyback mentions unless tied to a dollar figure
-
-For each claim, return a JSON array where every element has EXACTLY these fields:
-{
-  "speaker": "Full Name, Title",
-  "speaker_role": "CEO" | "CFO" | "COO" | "Other",
-  "claim_text": "exact verbatim quote from the transcript containing the number",
-  "metric": "revenue | cost_of_revenue | gross_profit | gross_margin | operating_income | operating_margin | operating_expenses | net_income | net_margin | eps | eps_diluted | ebitda | research_and_development | selling_general_admin | interest_expense | income_tax_expense | operating_cash_flow | free_cash_flow | capital_expenditure | total_assets | total_liabilities | total_debt | cash_and_equivalents | shareholders_equity",
-  "metric_type": "absolute | growth_rate | margin | ratio | change | per_share",
-  "stated_value": <number — use 15 for 15%, not 0.15>,
-  "unit": "usd | usd_millions | usd_billions | percent | basis_points | ratio",
-  "comparison_period": "year_over_year | quarter_over_quarter | sequential | full_year | custom | none",
-  "comparison_basis": "Q3 2025 vs Q3 2024" or null,
-  "is_gaap": true | false,
-  "segment": null or "segment name like Cloud, AWS, iPhone",
-  "confidence": <float 0.0–1.0>,
-  "context_snippet": "1–2 sentences of surrounding context"
-}
-
-RULES:
-- stated_value: raw number (15 for "15%", 94.9 for "$94.9 billion")
-- unit: must match the scale ("$94.9 billion" → stated_value=94.9, unit="usd_billions")
-- is_gaap: false when they say "non-GAAP", "adjusted", "excluding items/charges"
-- comparison_period: "year_over_year" for YoY, "quarter_over_quarter" for QoQ/sequential
-- confidence: how certain you are this is a real quantitative claim (0.5 = uncertain, 1.0 = certain)
-- Only extract from management speakers, not from analysts
-
-Output ONLY the JSON array. No other text.'''
-
-    def __init__(self, llm_client: LLMClient):
+        Args:
+            llm_client: Anthropic API client
+            prompt_version: Prompt version to use (e.g., "v1", "latest")
+        """
         self.llm = llm_client
+        self.prompt_manager = PromptManager()
+        self.prompt_version = prompt_version
+
+        # Load prompt on init (cached by PromptManager)
+        self._system_prompt = self.prompt_manager.get(
+            "claim_extraction", version=prompt_version
+        )
+        logger.info(
+            "ClaimExtractor initialized with prompt version=%s (%d chars)",
+            prompt_version,
+            len(self._system_prompt),
+        )
 
     def extract(
         self,
@@ -116,7 +55,7 @@ Output ONLY the JSON array. No other text.'''
             ticker=ticker,
             quarter=quarter,
             year=year,
-            system_prompt=self.SYSTEM_PROMPT,
+            system_prompt=self._system_prompt,
         )
 
         valid: list[ClaimCreate] = []
@@ -138,7 +77,7 @@ Output ONLY the JSON array. No other text.'''
 
     def _validate(self, raw: dict) -> ClaimCreate:
         """Turn a raw LLM dict into a validated ClaimCreate."""
-        raw["metric"] = self._normalize_metric(raw.get("metric", "unknown"))
+        raw["metric"] = normalize_metric_name(raw.get("metric", "unknown"))
 
         # Coerce enums gracefully
         try:
@@ -163,11 +102,6 @@ Output ONLY the JSON array. No other text.'''
         raw.setdefault("transcript_id", 0)
 
         return ClaimCreate(**raw)
-
-    @staticmethod
-    def _normalize_metric(metric: str) -> str:
-        normalized = metric.lower().strip()
-        return _METRIC_ALIASES.get(normalized, normalized)
 
     @staticmethod
     def _deduplicate(claims: list[ClaimCreate]) -> list[ClaimCreate]:

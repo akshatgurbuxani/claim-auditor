@@ -34,11 +34,17 @@ class FMPClient(BaseHTTPClient):
     Docs: https://site.financialmodelingprep.com/developer/docs
     """
 
-    def __init__(self, api_key: str, cache_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        api_key: str,
+        cache_dir: Optional[Path] = None,
+        retry_max_attempts: int = 3,
+    ):
         super().__init__(
             base_url="https://financialmodelingprep.com/stable",
             api_key=api_key,
             cache_dir=cache_dir,
+            retry_max_attempts=retry_max_attempts,
         )
 
     # ── Transcripts ──────────────────────────────────────────────────

@@ -61,6 +61,12 @@ class Settings(BaseSettings):
         (2025, 4), (2025, 3), (2025, 2), (2025, 1),
     ]
 
+    # Retry configuration (for API resilience)
+    retry_max_attempts: int = 3
+    retry_initial_delay: float = 1.0
+    retry_max_delay: float = 60.0
+    retry_exponential_base: float = 2.0
+
     model_config = {
         "env_file": _env_file,
         "env_file_encoding": "utf-8",

@@ -44,10 +44,12 @@ def compute_accuracy(verdict_counts: Dict[str, int]) -> float:
     verifiable = sum(cnt for k, cnt in verdict_counts.items() if k != "unverifiable")
     if verifiable == 0:
         return 0.0
-    return (
+    accuracy = (
         verdict_counts.get("verified", 0)
         + verdict_counts.get("approximately_correct", 0)
     ) / verifiable
+    # Round to 4 decimal places to avoid floating point precision issues
+    return round(accuracy, 4)
 
 
 def compute_trust_score(verdict_counts: Dict[str, int]) -> float:
@@ -69,7 +71,9 @@ def compute_trust_score(verdict_counts: Dict[str, int]) -> float:
         + verdict_counts.get("misleading", 0) * -0.3
         + verdict_counts.get("incorrect", 0) * -1.0
     ) / verifiable
-    return max(0.0, min(100.0, (raw + 1) * 50))
+    trust = max(0.0, min(100.0, (raw + 1) * 50))
+    # Round to 1 decimal place for cleaner display
+    return round(trust, 1)
 
 
 # ---------------------------------------------------------------------------

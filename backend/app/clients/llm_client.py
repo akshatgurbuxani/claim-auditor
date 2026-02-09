@@ -7,6 +7,8 @@ from typing import Any, List
 
 import anthropic
 
+from app.utils.retry import with_retry
+
 logger = logging.getLogger(__name__)
 
 
@@ -17,14 +19,35 @@ class LLMClient:
     - Send prompts with structured output expectations
     - Parse and validate JSON responses
     - Track token usage
+    - Retry on transient failures
     """
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514"):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "claude-sonnet-4-20250514",
+        retry_max_attempts: int = 3,
+    ):
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
+        self._retry_max_attempts = retry_max_attempts
 
+    @with_retry(
+        max_attempts=3,
+        initial_delay=2.0,  # Claude API is slower, start with 2s
+        retry_on=(
+            anthropic.APIError,
+            anthropic.APITimeoutError,
+            anthropic.APIConnectionError,
+            anthropic.RateLimitError,
+        ),
+        reraise_on=(
+            anthropic.BadRequestError,  # Invalid prompt - don't retry
+            anthropic.AuthenticationError,  # Bad API key - don't retry
+        ),
+    )
     def extract_claims(
         self,
         transcript_text: str,
@@ -33,7 +56,18 @@ class LLMClient:
         year: int,
         system_prompt: str,
     ) -> List[dict]:
-        """Send transcript to Claude and parse the structured claim response."""
+        """Send transcript to Claude and parse the structured claim response.
+
+        Retries on:
+        - API errors (5xx from Anthropic)
+        - Timeouts
+        - Rate limits
+        - Network errors
+
+        Does NOT retry on:
+        - Bad request (invalid prompt)
+        - Authentication errors
+        """
         user_message = (
             f"Analyze this {ticker} Q{quarter} {year} earnings call transcript.\n\n"
             "Extract ALL quantitative claims made by management (CEO, CFO, etc.).\n\n"
