@@ -33,24 +33,52 @@ import app.models  # noqa: F401 — register all models
 
 st.set_page_config(
     page_title="Claim Auditor",
-    page_icon="📊",
+    page_icon="⚖️",
     layout="wide",
 )
 
-VERDICT_COLORS = {
-    "verified": "#16a34a",
-    "approximately_correct": "#2563eb",
-    "misleading": "#d97706",
-    "incorrect": "#dc2626",
-    "unverifiable": "#6b7280",
-}
+# Minimal CSS for polish
+st.markdown("""
+<style>
+    /* Subtle improvements without overhaul */
+    .block-container {
+        padding-top: 2rem;
+        max-width: 1400px;
+    }
 
-VERDICT_ICONS = {
-    "verified": "✅",
-    "approximately_correct": "≈",
-    "misleading": "⚠️",
-    "incorrect": "❌",
-    "unverifiable": "❓",
+    /* Trust badge styling */
+    .trust-badge {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 14px;
+    }
+    .trust-high { background: #d1fae5; color: #065f46; }
+    .trust-good { background: #dbeafe; color: #1e40af; }
+    .trust-medium { background: #fef3c7; color: #92400e; }
+    .trust-low { background: #fee2e2; color: #991b1b; }
+
+    /* Cleaner headers */
+    h1 { color: #0f172a; font-weight: 700; }
+    h2 { color: #1e293b; font-weight: 600; margin-top: 2rem; }
+    h3 { color: #334155; font-weight: 600; }
+
+    /* Better card appearance */
+    [data-testid="stExpander"] {
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+</style>
+""", unsafe_allow_html=True)
+
+VERDICT_DISPLAY_NAMES = {
+    "verified": "Correct",
+    "approximately_correct": "Mostly Correct",
+    "misleading": "Misleading",
+    "incorrect": "Incorrect",
+    "unverifiable": "Cannot Verify",
 }
 
 PATTERN_ICONS = {
@@ -62,15 +90,49 @@ PATTERN_ICONS = {
 }
 
 
+def get_verdict_display_name(verdict: str) -> str:
+    """Convert internal verdict name to user-friendly display name."""
+    return VERDICT_DISPLAY_NAMES.get(verdict, verdict.replace("_", " ").title())
+
+
 @st.cache_resource
-def get_db_session():
+def get_session_factory():
+    """Cache the session factory (engine + Session class), not the session instance."""
     settings = Settings()
-    engine = build_engine(settings.database_url, echo=False)
-    Session = build_session_factory(engine)
-    return Session()
+
+    # Fix database path for Streamlit Cloud deployment
+    # Make path relative to this file's location, not working directory
+    if settings.database_url.startswith("sqlite:///./"):
+        # Get path to this file's directory
+        app_dir = Path(__file__).parent
+        db_relative_path = settings.database_url.replace("sqlite:///./", "")
+        db_path = app_dir / db_relative_path
+
+        # Ensure the path exists
+        if not db_path.exists():
+            st.error(f"Database not found at {db_path}")
+            st.info(f"Looking in: {app_dir}")
+            st.info(f"Files available: {list(app_dir.glob('**/*.db'))}")
+            st.stop()
+
+        # Use absolute path
+        database_url = f"sqlite:///{db_path.absolute()}"
+    else:
+        database_url = settings.database_url
+
+    engine = build_engine(database_url, echo=False)
+    return build_session_factory(engine)
 
 
-db = get_db_session()
+def get_db():
+    """Get a fresh database session for the current request."""
+    # Check if we already have a session in st.session_state for this page load
+    if 'db_session' not in st.session_state:
+        st.session_state.db_session = get_session_factory()()
+    return st.session_state.db_session
+
+
+db = get_db()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -140,6 +202,18 @@ def format_value(value, unit):
     return str(value)
 
 
+def get_trust_badge_html(trust_score: float) -> str:
+    """Return HTML for trust level badge."""
+    if trust_score >= 80:
+        return '<span class="trust-badge trust-high">High Trust</span>'
+    elif trust_score >= 60:
+        return '<span class="trust-badge trust-good">Good</span>'
+    elif trust_score >= 40:
+        return '<span class="trust-badge trust-medium">Mixed</span>'
+    else:
+        return '<span class="trust-badge trust-low">Low Trust</span>'
+
+
 def _render_claim_detail(c, vf, show_quarter=True):
     """Render a single claim's details inside a container."""
     quarter_label = f"Q{c.transcript.quarter} {c.transcript.year}" if show_quarter else ""
@@ -158,13 +232,17 @@ def _render_claim_detail(c, vf, show_quarter=True):
         col_e.markdown("**Actual:** —")
 
     if vf:
-        st.markdown(f"**Explanation:** {vf.explanation}")
+        # Escape dollar signs to prevent LaTeX rendering
+        explanation = vf.explanation.replace('$', r'\$')
+        st.markdown(f"**Explanation:** {explanation}")
         if vf.misleading_flags:
             flags = ", ".join(f.replace("_", " ") for f in vf.misleading_flags)
-            st.warning(f"🏴 Flags: {flags}")
+            st.warning(f"Flags: {flags}")
 
     if c.context_snippet:
-        st.caption(f'📎 Context: "{c.context_snippet}"')
+        # Escape dollar signs to prevent LaTeX rendering
+        context = c.context_snippet.replace('$', r'\$')
+        st.caption(f'Context: "{context}"')
 
     meta_parts = []
     if c.comparison_period and c.comparison_period != "none":
@@ -181,7 +259,7 @@ def _render_claim_detail(c, vf, show_quarter=True):
 # ── Company Detail Dialog ────────────────────────────────────────────────
 
 
-@st.dialog("Company Detail", width="large")
+@st.dialog("Company Analysis", width="large")
 def show_company_detail(company_id: int):
     """Full company analysis in a popup dialog."""
     comp = next((c for c in get_companies() if c.id == company_id), None)
@@ -194,26 +272,27 @@ def show_company_detail(company_id: int):
 
     # ── Header ────────────────────────────────────────────────────────
     st.markdown(f"## {comp.ticker} — {comp.name}")
-    st.caption(f"{comp.sector} · {total} claims analyzed")
+    st.caption(f"{comp.sector} · {total} claims analyzed across earnings calls")
 
     col_trust, col_acc = st.columns([1, 2])
     with col_trust:
         st.metric("Trust Score", f"{trust:.0f} / 100")
         st.progress(min(trust / 100, 1.0))
+        st.markdown(get_trust_badge_html(trust), unsafe_allow_html=True)
     with col_acc:
         c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("✅ Verified", v_counts["verified"])
-        c2.metric("≈ Approx", v_counts["approximately_correct"])
-        c3.metric("⚠️ Misleading", v_counts["misleading"])
-        c4.metric("❌ Incorrect", v_counts["incorrect"])
-        c5.metric("❓ N/A", v_counts["unverifiable"])
+        c1.metric("Correct", v_counts["verified"])
+        c2.metric("Mostly Correct", v_counts["approximately_correct"])
+        c3.metric("Misleading", v_counts["misleading"])
+        c4.metric("Incorrect", v_counts["incorrect"])
+        c5.metric("Cannot Verify", v_counts["unverifiable"])
 
     st.markdown("---")
 
     # ── Quarter-to-Quarter Breakdown ──────────────────────────────────
     quarter_stats = compute_quarter_stats(claims)
     if quarter_stats:
-        st.markdown("### 📅 Quarter-to-Quarter Breakdown")
+        st.markdown("### Quarter-to-Quarter Performance")
 
         # Summary table
         table_data = []
@@ -221,11 +300,11 @@ def show_company_detail(company_id: int):
             table_data.append({
                 "Quarter": qkey,
                 "Claims": qtotal,
-                "✅": v["verified"],
-                "≈": v["approximately_correct"],
-                "⚠️": v["misleading"],
-                "❌": v["incorrect"],
-                "❓": v["unverifiable"],
+                "Correct": v["verified"],
+                "Mostly": v["approximately_correct"],
+                "Misleading": v["misleading"],
+                "Incorrect": v["incorrect"],
+                "N/A": v["unverifiable"],
                 "Accuracy": f"{qacc:.0%}",
                 "Trust": f"{qtrust:.0f}",
             })
@@ -236,10 +315,19 @@ def show_company_detail(company_id: int):
             latest_trust = quarter_stats[0][4]
             prev_trust = quarter_stats[1][4]
             delta = latest_trust - prev_trust
-            trend = "📈" if delta > 0 else "📉" if delta < 0 else "➡️"
+            if delta > 0:
+                trend = "↑ Improving"
+                trend_color = "green"
+            elif delta < 0:
+                trend = "↓ Declining"
+                trend_color = "red"
+            else:
+                trend = "→ Stable"
+                trend_color = "gray"
+
             st.markdown(
-                f"**Trend:** {trend} Trust moved **{delta:+.0f}** points "
-                f"from {quarter_stats[1][0]} → {quarter_stats[0][0]}"
+                f"**Recent Trend:** :{trend_color}[{trend}] — "
+                f"Trust moved **{delta:+.0f}** points from {quarter_stats[1][0]} to {quarter_stats[0][0]}"
             )
 
         st.markdown("---")
@@ -259,9 +347,10 @@ def show_company_detail(company_id: int):
         pattern_source = "live"
 
     if patterns_display:
-        st.markdown("### 🔍 Cross-Quarter Patterns Detected")
+        st.markdown("### Systematic Discrepancy Patterns")
+        st.caption("Cross-quarter analysis reveals consistent patterns in how management communicates financial performance.")
         if pattern_source == "live":
-            st.caption("⚡ Computed live — run `--step analyze` to persist.")
+            st.info("💡 Computed on-demand — run `--step analyze` to persist patterns.")
         for p in patterns_display:
             ptype = p.pattern_type.value if hasattr(p.pattern_type, "value") else p.pattern_type
             icon = PATTERN_ICONS.get(ptype, "🔍")
@@ -269,12 +358,12 @@ def show_company_detail(company_id: int):
             quarters = p.affected_quarters if isinstance(p.affected_quarters, list) else []
             with st.expander(
                 f"{icon} **{ptype.replace('_', ' ').title()}** — "
-                f"Severity: {severity_pct} · {', '.join(quarters)}"
+                f"Severity: {severity_pct} · Quarters: {', '.join(quarters)}"
             ):
                 st.write(p.description)
                 evidence = p.evidence if isinstance(p.evidence, list) else []
                 for ev in evidence:
-                    st.caption(f"📎 {ev}")
+                    st.caption(f"→ {ev}")
         st.markdown("---")
 
     # ── Top Discrepancies ─────────────────────────────────────────────
@@ -283,35 +372,33 @@ def show_company_detail(company_id: int):
         if c.verification and c.verification.verdict in ("misleading", "incorrect")
     ]
     if bad_claims:
-        st.markdown("### 🚩 Top Discrepancies")
+        st.markdown("### Material Discrepancies")
+        st.caption("Claims flagged as misleading or incorrect, sorted by severity.")
         for c in bad_claims[:5]:
             vf = c.verification
-            icon = VERDICT_ICONS.get(vf.verdict, "")
-            with st.expander(f'{icon} "{c.claim_text[:80]}…" — {c.speaker}'):
+            verdict_label = get_verdict_display_name(vf.verdict)
+            # Escape dollar signs to prevent LaTeX rendering
+            claim_preview = c.claim_text[:80].replace('$', r'\$')
+            with st.expander(f'**{verdict_label}** — "{claim_preview}…" — {c.speaker}'):
                 _render_claim_detail(c, vf)
         st.markdown("---")
 
     # ── Per-Quarter Claims ────────────────────────────────────────────
     if quarter_stats:
-        st.markdown("### 📋 Claims by Quarter")
+        st.markdown("### All Claims by Quarter")
         for qkey, v, qtotal, qacc, qtrust, qclaims in quarter_stats:
-            trust_icon = (
-                "🟢" if qtrust >= 80 else
-                "🔵" if qtrust >= 60 else
-                "🟡" if qtrust >= 40 else
-                "🔴"
-            )
-            with st.expander(f"{trust_icon} **{qkey}** — {qtotal} claims · {qacc:.0%} accuracy · Trust {qtrust:.0f}"):
+            trust_label = "High Trust" if qtrust >= 80 else "Good" if qtrust >= 60 else "Mixed" if qtrust >= 40 else "Low Trust"
+            with st.expander(f"**{qkey}** — {qtotal} claims · {qacc:.0%} accuracy · Trust: {qtrust:.0f} ({trust_label})"):
                 for c in qclaims:
                     vf = c.verification
                     if vf:
-                        icon = VERDICT_ICONS.get(vf.verdict, "")
-                        verdict_label = vf.verdict.replace("_", " ").title()
+                        verdict_label = get_verdict_display_name(vf.verdict)
                     else:
-                        icon = "⏳"
                         verdict_label = "Pending"
+                    # Escape dollar signs to prevent LaTeX rendering
+                    claim_preview = c.claim_text[:100].replace('$', r'\$')
                     st.markdown(
-                        f'{icon} **{verdict_label}** — "{c.claim_text[:100]}"'
+                        f'**{verdict_label}** — "{claim_preview}"'
                     )
 
 
@@ -320,23 +407,24 @@ def show_company_detail(company_id: int):
 companies = get_companies()
 
 if not companies:
-    st.title("📊 Claim Auditor")
+    st.title("Claim Auditor")
     st.warning(
-        "No data found. Run the pipeline first:\n\n"
+        "**No data found.** Run the pipeline first to analyze earnings calls:\n\n"
         "```bash\ncd backend && python -m scripts.run_pipeline\n```"
     )
     st.stop()
 
 # ── Sidebar ──────────────────────────────────────────────────────────────
 
-st.sidebar.title("📊 Claim Auditor")
+st.sidebar.title("Claim Auditor")
+st.sidebar.caption("Automated verification of management claims from earnings calls")
 st.sidebar.markdown("---")
 
-view = st.sidebar.radio("View", ["Dashboard", "Company Deep Dive"])
+view = st.sidebar.radio("Navigate", ["Dashboard", "Company Deep Dive"], label_visibility="collapsed")
 
 if view == "Company Deep Dive":
     selected_ticker = st.sidebar.selectbox(
-        "Company",
+        "Select Company",
         options=[c.ticker for c in companies],
         format_func=lambda t: f"{t} — {next(c.name for c in companies if c.ticker == t)}",
     )
@@ -344,7 +432,7 @@ if view == "Company Deep Dive":
         "Filter by verdict",
         options=["verified", "approximately_correct", "misleading", "incorrect", "unverifiable"],
         default=[],
-        format_func=lambda v: f"{VERDICT_ICONS.get(v, '')} {v.replace('_', ' ').title()}",
+        format_func=get_verdict_display_name,
     )
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -352,10 +440,10 @@ if view == "Company Deep Dive":
 # ══════════════════════════════════════════════════════════════════════════
 
 if view == "Dashboard":
-    st.title("📊 Claim Auditor — Dashboard")
+    st.title("Dashboard")
     st.caption(
-        "Analyzing management claims from earnings calls against actual financial data. "
-        "Flagging discrepancies and misleading framing."
+        "Systematically analyzing quantitative claims from earnings call transcripts against actual financial data. "
+        "Identifying discrepancies, misleading framing, and patterns of inaccurate communication."
     )
 
     # Aggregate stats across all companies
@@ -374,17 +462,18 @@ if view == "Dashboard":
             agg_v[k] += v.get(k, 0)
 
     # Top-level metrics
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     col1.metric("Total Claims", len(all_claims))
-    col2.metric("✅ Verified", agg_v["verified"])
-    col3.metric("≈ Approx Correct", agg_v["approximately_correct"])
-    col4.metric("⚠️ Misleading", agg_v["misleading"])
-    col5.metric("❌ Incorrect", agg_v["incorrect"])
+    col2.metric("Correct", agg_v["verified"])
+    col3.metric("Mostly Correct", agg_v["approximately_correct"])
+    col4.metric("Misleading", agg_v["misleading"])
+    col5.metric("Incorrect", agg_v["incorrect"])
+    col6.metric("Cannot Verify", agg_v["unverifiable"])
 
     st.markdown("---")
 
     # Company cards
-    st.subheader("Companies")
+    st.subheader("Company Overview")
 
     # Sort by trust score descending
     company_data.sort(key=lambda x: x[4], reverse=True)
@@ -395,24 +484,19 @@ if view == "Dashboard":
             if i + j < len(company_data):
                 comp, v, total, acc, trust = company_data[i + j]
                 with col:
-                    trust_color = (
-                        "🟢" if trust >= 80 else
-                        "🔵" if trust >= 60 else
-                        "🟡" if trust >= 40 else
-                        "🔴"
-                    )
-                    st.markdown(
-                        f"### {comp.ticker} {trust_color}\n"
-                        f"**{comp.name}** · {comp.sector}"
-                    )
-                    st.progress(min(trust / 100, 1.0), text=f"Trust: {trust:.0f}/100")
+                    # Header with trust badge
+                    st.markdown(f"### {comp.ticker}")
+                    st.markdown(get_trust_badge_html(trust), unsafe_allow_html=True)
+                    st.caption(f"**{comp.name}** · {comp.sector}")
+
+                    st.progress(min(trust / 100, 1.0), text=f"Trust Score: {trust:.0f}/100")
 
                     sub = st.columns(5)
-                    sub[0].metric("✅", v["verified"], label_visibility="visible")
-                    sub[1].metric("≈", v["approximately_correct"], label_visibility="visible")
-                    sub[2].metric("⚠️", v["misleading"], label_visibility="visible")
-                    sub[3].metric("❌", v["incorrect"], label_visibility="visible")
-                    sub[4].metric("❓", v["unverifiable"], label_visibility="visible")
+                    sub[0].metric("Cor", v["verified"], label_visibility="visible")
+                    sub[1].metric("Mst", v["approximately_correct"], label_visibility="visible")
+                    sub[2].metric("Mis", v["misleading"], label_visibility="visible")
+                    sub[3].metric("Inc", v["incorrect"], label_visibility="visible")
+                    sub[4].metric("N/A", v["unverifiable"], label_visibility="visible")
 
                     # Show pattern badges on company cards
                     comp_patterns = all_patterns.get(comp.id, [])
@@ -421,13 +505,13 @@ if view == "Dashboard":
                             PATTERN_ICONS.get(p.pattern_type, "🔍")
                             for p in comp_patterns
                         )
-                        st.caption(f"{total} claims · {acc:.0%} accuracy · Patterns: {badges}")
+                        st.caption(f"{total} claims · {acc:.0%} accurate · Patterns: {badges}")
                     else:
-                        st.caption(f"{total} claims · {acc:.0%} accuracy · ✨ No patterns")
+                        st.caption(f"{total} claims · {acc:.0%} accurate · No patterns detected")
 
                     # ── "View Details" button opens popup dialog ──
                     if st.button(
-                        f"🔍 View {comp.ticker} Details",
+                        f"View {comp.ticker} Analysis",
                         key=f"detail_{comp.id}",
                         use_container_width=True,
                     ):
@@ -439,10 +523,10 @@ if view == "Dashboard":
     all_pattern_list = [p for pats in all_patterns.values() for p in pats]
     if all_pattern_list:
         st.markdown("---")
-        st.subheader("🔍 Cross-Quarter Discrepancy Patterns")
+        st.subheader("Systematic Communication Patterns")
         st.caption(
-            "Systematic patterns of misleading communication detected across "
-            "multiple earnings calls for each company."
+            "Recurring patterns of potentially misleading communication detected across "
+            "multiple quarters. These patterns suggest systematic issues rather than isolated errors."
         )
 
         # Summary counters by pattern type
@@ -470,12 +554,12 @@ if view == "Dashboard":
                 quarters = ", ".join(p.affected_quarters) if p.affected_quarters else "—"
                 with st.expander(
                     f"{icon} **{comp.ticker}** — {label} "
-                    f"(severity: {severity_pct}, quarters: {quarters})"
+                    f"(Severity: {severity_pct}, Quarters: {quarters})"
                 ):
                     st.write(p.description)
                     if p.evidence:
                         for ev in p.evidence:
-                            st.caption(f"📎 {ev}")
+                            st.caption(f"→ {ev}")
 
 # ══════════════════════════════════════════════════════════════════════════
 # COMPANY DEEP DIVE VIEW
@@ -488,27 +572,28 @@ elif view == "Company Deep Dive":
 
     # Header
     st.title(f"{company.ticker} — {company.name}")
-    st.caption(f"{company.sector} · {total} claims analyzed")
+    st.caption(f"{company.sector} · {total} claims analyzed across earnings calls")
 
     # Trust score + verdict breakdown
     col_trust, col_acc = st.columns([1, 2])
     with col_trust:
         st.metric("Trust Score", f"{trust:.0f} / 100")
         st.progress(min(trust / 100, 1.0))
+        st.markdown(get_trust_badge_html(trust), unsafe_allow_html=True)
     with col_acc:
         c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("✅ Verified", v_counts["verified"])
-        c2.metric("≈ Approx", v_counts["approximately_correct"])
-        c3.metric("⚠️ Misleading", v_counts["misleading"])
-        c4.metric("❌ Incorrect", v_counts["incorrect"])
-        c5.metric("❓ N/A", v_counts["unverifiable"])
+        c1.metric("Correct", v_counts["verified"])
+        c2.metric("Mostly Correct", v_counts["approximately_correct"])
+        c3.metric("Misleading", v_counts["misleading"])
+        c4.metric("Incorrect", v_counts["incorrect"])
+        c5.metric("Cannot Verify", v_counts["unverifiable"])
 
     st.markdown("---")
 
     # ── Quarter-to-Quarter Breakdown ──────────────────────────────────
     quarter_stats = compute_quarter_stats(claims)
     if quarter_stats:
-        st.subheader("📅 Quarter-to-Quarter Breakdown")
+        st.subheader("Quarter-to-Quarter Performance")
 
         # Summary table
         table_data = []
@@ -516,11 +601,11 @@ elif view == "Company Deep Dive":
             table_data.append({
                 "Quarter": qkey,
                 "Claims": qtotal,
-                "✅": v["verified"],
-                "≈": v["approximately_correct"],
-                "⚠️": v["misleading"],
-                "❌": v["incorrect"],
-                "❓": v["unverifiable"],
+                "Correct": v["verified"],
+                "Mostly": v["approximately_correct"],
+                "Misleading": v["misleading"],
+                "Incorrect": v["incorrect"],
+                "N/A": v["unverifiable"],
                 "Accuracy": f"{qacc:.0%}",
                 "Trust": f"{qtrust:.0f}",
             })
@@ -531,10 +616,19 @@ elif view == "Company Deep Dive":
             latest_trust = quarter_stats[0][4]
             prev_trust = quarter_stats[1][4]
             delta = latest_trust - prev_trust
-            trend = "📈" if delta > 0 else "📉" if delta < 0 else "➡️"
+            if delta > 0:
+                trend = "↑ Improving"
+                trend_color = "green"
+            elif delta < 0:
+                trend = "↓ Declining"
+                trend_color = "red"
+            else:
+                trend = "→ Stable"
+                trend_color = "gray"
+
             st.markdown(
-                f"**Trend:** {trend} Trust moved **{delta:+.0f}** points "
-                f"from {quarter_stats[1][0]} → {quarter_stats[0][0]}"
+                f"**Recent Trend:** :{trend_color}[{trend}] — "
+                f"Trust moved **{delta:+.0f}** points from {quarter_stats[1][0]} to {quarter_stats[0][0]}"
             )
 
         st.markdown("---")
@@ -554,9 +648,10 @@ elif view == "Company Deep Dive":
         pattern_source = "live"
 
     if patterns_display:
-        st.subheader("🔍 Cross-Quarter Patterns Detected")
+        st.subheader("Systematic Discrepancy Patterns")
+        st.caption("Cross-quarter analysis reveals consistent patterns in how management communicates financial performance.")
         if pattern_source == "live":
-            st.caption("⚡ Computed live — run `--step analyze` to persist.")
+            st.info("💡 Computed on-demand — run `--step analyze` to persist patterns.")
         for p in patterns_display:
             ptype = p.pattern_type.value if hasattr(p.pattern_type, "value") else p.pattern_type
             icon = PATTERN_ICONS.get(ptype, "🔍")
@@ -564,12 +659,12 @@ elif view == "Company Deep Dive":
             quarters = p.affected_quarters if isinstance(p.affected_quarters, list) else []
             with st.expander(
                 f"{icon} **{ptype.replace('_', ' ').title()}** — "
-                f"Severity: {severity_pct} · {', '.join(quarters)}"
+                f"Severity: {severity_pct} · Quarters: {', '.join(quarters)}"
             ):
                 st.write(p.description)
                 evidence = p.evidence if isinstance(p.evidence, list) else []
                 for ev in evidence:
-                    st.caption(f"📎 {ev}")
+                    st.caption(f"→ {ev}")
         st.markdown("---")
 
     # ── Top Discrepancies ────────────────────────────────────────────
@@ -578,11 +673,14 @@ elif view == "Company Deep Dive":
         if c.verification and c.verification.verdict in ("misleading", "incorrect")
     ]
     if bad_claims:
-        st.subheader("🚩 Top Discrepancies")
+        st.subheader("Material Discrepancies")
+        st.caption("Claims flagged as misleading or incorrect, sorted by severity.")
         for c in bad_claims[:5]:
             vf = c.verification
-            icon = VERDICT_ICONS.get(vf.verdict, "")
-            with st.expander(f'{icon} "{c.claim_text[:80]}…" — {c.speaker}'):
+            verdict_label = get_verdict_display_name(vf.verdict)
+            # Escape dollar signs to prevent LaTeX rendering
+            claim_preview = c.claim_text[:80].replace('$', r'\$')
+            with st.expander(f'**{verdict_label}** — "{claim_preview}…" — {c.speaker}'):
                 _render_claim_detail(c, vf)
         st.markdown("---")
 
@@ -611,12 +709,14 @@ elif view == "Company Deep Dive":
             for c in quarter_groups[qkey]:
                 vf = c.verification
 
+                # Escape dollar signs to prevent LaTeX rendering
+                claim_preview = c.claim_text[:90].replace('$', r'\$')
+
                 if vf:
-                    icon = VERDICT_ICONS.get(vf.verdict, "")
-                    verdict_label = vf.verdict.replace("_", " ").title()
-                    header = f'{icon} **{verdict_label}** — "{c.claim_text[:90]}"'
+                    verdict_label = get_verdict_display_name(vf.verdict)
+                    header = f'**{verdict_label}** — "{claim_preview}"'
                 else:
-                    header = f'⏳ Pending — "{c.claim_text[:90]}"'
+                    header = f'**Pending** — "{claim_preview}"'
 
                 with st.expander(header):
                     _render_claim_detail(c, vf, show_quarter=False)
