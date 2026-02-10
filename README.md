@@ -244,6 +244,8 @@ curl "http://localhost:8000/api/claims/?verdict=misleading"
 
 **Full docs:** Visit http://localhost:8000/docs for interactive API documentation
 
+**Checkout:** [SETUP_GUIDE.md](docs/SETUP_GUIDE.md) for comprehensive setup instructions
+
 ---
 
 ## Tech Stack
