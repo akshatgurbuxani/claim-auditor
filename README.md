@@ -2,7 +2,7 @@
 
 **Automated earnings verification system that fact-checks executive claims from earnings calls.**
 
-Executives make 30-50 quantitative claims per earnings call. This system extracts them via LLM, verifies against SEC data, and detects patterns of misleading communication.
+Executives say a lot of things on earnings calls. Some of it is accurate. Some of it is misleading. We want to know the difference. We've build a system that analyzes earnings call transcripts, extracts quantitative claims made by management, and verifies them against actual financial data.
 
 **🔗 [Live Demo](https://claim-auditor.streamlit.app/)**\
 **🎥 [Demo Video](https://youtu.be/coming-soon)** *(Coming soon!)*
