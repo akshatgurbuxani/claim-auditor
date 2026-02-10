@@ -40,7 +40,7 @@ class TestExtractionServiceOrchestration:
         transcript_repo = TranscriptRepository(db)
         claim_repo = ClaimRepository(db)
 
-        service = ExtractionService(extractor, transcript_repo, claim_repo)
+        service = ExtractionService(db, extractor, transcript_repo, claim_repo)
         result = service.extract_all()
 
         assert result["transcripts_processed"] == 1
@@ -55,7 +55,7 @@ class TestExtractionServiceOrchestration:
         transcript_repo = TranscriptRepository(db)
         claim_repo = ClaimRepository(db)
 
-        service = ExtractionService(extractor, transcript_repo, claim_repo)
+        service = ExtractionService(db, extractor, transcript_repo, claim_repo)
         result = service.extract_all()
 
         # sample_claim was already attached to sample_transcript,
@@ -71,7 +71,7 @@ class TestExtractionServiceOrchestration:
         transcript_repo = TranscriptRepository(db)
         claim_repo = ClaimRepository(db)
 
-        service = ExtractionService(extractor, transcript_repo, claim_repo)
+        service = ExtractionService(db, extractor, transcript_repo, claim_repo)
         service.extract_all()
 
         claims = claim_repo.get_for_transcript(sample_transcript.id)
@@ -93,7 +93,7 @@ class TestExtractionServiceOrchestration:
         transcript_repo = TranscriptRepository(db)
         claim_repo = ClaimRepository(db)
 
-        service = ExtractionService(extractor, transcript_repo, claim_repo)
+        service = ExtractionService(db, extractor, transcript_repo, claim_repo)
         result = service.extract_all()
 
         assert result["errors"] == 1
@@ -133,7 +133,7 @@ class TestExtractionServiceOrchestration:
         transcript_repo = TranscriptRepository(db)
         claim_repo = ClaimRepository(db)
 
-        service = ExtractionService(extractor, transcript_repo, claim_repo)
+        service = ExtractionService(db, extractor, transcript_repo, claim_repo)
         result = service.extract_all()
 
         # Only 1 should survive deduplication (same metric, value, unit, period)

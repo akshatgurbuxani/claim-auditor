@@ -6,6 +6,8 @@ Persists detected discrepancy patterns to the database for later retrieval.
 import logging
 from typing import Any, Dict, List
 
+from sqlalchemy.orm import Session
+
 from app.engines.discrepancy_analyzer import DiscrepancyAnalyzer
 from app.models.claim import ClaimModel
 from app.models.discrepancy_pattern import DiscrepancyPatternModel
@@ -22,12 +24,14 @@ logger = logging.getLogger(__name__)
 class AnalysisService:
     def __init__(
         self,
+        db: Session,
         discrepancy_analyzer: DiscrepancyAnalyzer,
         company_repo: CompanyRepository,
         claim_repo: ClaimRepository,
         verification_repo: VerificationRepository,
         pattern_repo: DiscrepancyPatternRepository | None = None,
     ):
+        self.db = db
         self.analyzer = discrepancy_analyzer
         self.companies = company_repo
         self.claims = claim_repo
@@ -67,6 +71,7 @@ class AnalysisService:
                     severity=p.severity,
                     evidence=p.evidence,
                 ))
+            self.db.commit()  # Commit pattern changes
             logger.info(
                 "Persisted %d discrepancy patterns for %s",
                 len(detected_patterns), company.ticker,
@@ -93,8 +98,12 @@ class AnalysisService:
         """Run analysis for every company in the database."""
         results = []
         for c in self.companies.get_all():
-            analysis = self.analyze_company(c.id)
-            results.append(analysis)
+            try:
+                analysis = self.analyze_company(c.id)
+                results.append(analysis)
+            except Exception as exc:
+                self.db.rollback()  # Rollback failed analysis
+                logger.exception("Analysis error for company %s (rolled back): %s", c.ticker, exc)
         return results
 
     # ── helpers ──────────────────────────────────────────────────────

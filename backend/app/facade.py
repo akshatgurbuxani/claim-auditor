@@ -1,41 +1,31 @@
 """Pipeline facade — single entry point for all external interfaces.
 
+Now powered by Dependency Injection container for explicit, testable wiring.
+
 Streamlit, CLI (run_pipeline.py), MCP server, and FastAPI should all
-use this instead of wiring up services directly.  If the internal
-pipeline changes (new engines, different repos, etc.) only this file
+use this instead of wiring up services directly. If the internal
+pipeline changes (new engines, different repos, etc.) only the container
 needs updating — every consumer is insulated.
 
 Usage::
 
-    facade = PipelineFacade()          # uses Settings() from .env
+    facade = PipelineFacade()          # uses default container
     result = facade.run_pipeline(["AAPL"], steps="all")
     analysis = facade.get_company_analysis("AAPL")
     facade.close()
+
+Or with custom container::
+
+    container = AppContainer()
+    container.settings.override(custom_settings)
+    facade = PipelineFacade(container=container)
 """
 
 import logging
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.clients.fmp_client import FMPClient
-from app.clients.llm_client import LLMClient
-from app.config import Settings
-from app.database import Base, build_engine, build_session_factory
-from app.engines.claim_extractor import ClaimExtractor
-from app.engines.discrepancy_analyzer import DiscrepancyAnalyzer
-from app.engines.metric_mapper import MetricMapper
-from app.engines.verification_engine import VerificationEngine
-from app.repositories.claim_repo import ClaimRepository
-from app.repositories.company_repo import CompanyRepository
-from app.repositories.discrepancy_pattern_repo import DiscrepancyPatternRepository
-from app.repositories.financial_data_repo import FinancialDataRepository
-from app.repositories.transcript_repo import TranscriptRepository
-from app.repositories.verification_repo import VerificationRepository
+from app.container import AppContainer
 from app.schemas.discrepancy import CompanyAnalysis
-from app.services.analysis_service import AnalysisService
-from app.services.extraction_service import ExtractionService
-from app.services.ingestion_service import IngestionService
-from app.services.verification_service import VerificationService
 from app.utils.scoring import compute_stats
 
 import app.models  # noqa: F401 — register all models with Base.metadata
@@ -46,49 +36,24 @@ logger = logging.getLogger(__name__)
 class PipelineFacade:
     """High-level API for the earnings verification pipeline.
 
-    Hides all internal wiring (repos, engines, services, clients).
+    Uses dependency injection container for clean, explicit wiring.
     Returns only Pydantic schemas and plain dicts — never ORM models.
+
+    Benefits of container-based approach:
+    - Explicit dependencies (no hidden wiring)
+    - Easy to mock for testing
+    - Centralized configuration
+    - Follows Dependency Inversion Principle
     """
 
-    def __init__(self, settings: Optional[Settings] = None):
-        self._settings = settings or Settings()
-        self._setup_db()
-        self._setup_repos()
-        self._setup_clients()
+    def __init__(self, container: Optional[AppContainer] = None):
+        """Initialize facade with optional custom container.
 
-    # ── internal wiring (private) ─────────────────────────────────────
-
-    def _setup_db(self) -> None:
-        s = self._settings
-        db_path = Path(s.database_url.replace("sqlite:///", ""))
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._engine = build_engine(s.database_url, echo=False)
-        Base.metadata.create_all(bind=self._engine)
-        Session = build_session_factory(self._engine)
-        self._db = Session()
-
-    def _setup_repos(self) -> None:
-        db = self._db
-        self._company_repo = CompanyRepository(db)
-        self._transcript_repo = TranscriptRepository(db)
-        self._financial_repo = FinancialDataRepository(db)
-        self._claim_repo = ClaimRepository(db)
-        self._verification_repo = VerificationRepository(db)
-        self._pattern_repo = DiscrepancyPatternRepository(db)
-
-    def _setup_clients(self) -> None:
-        s = self._settings
-        cache_dir = Path(s.database_url.replace("sqlite:///", "")).parent / "fmp_cache"
-        self._fmp = FMPClient(
-            api_key=s.fmp_api_key,
-            cache_dir=cache_dir,
-            retry_max_attempts=s.retry_max_attempts,
-        )
-        self._llm = LLMClient(
-            api_key=s.anthropic_api_key,
-            model=s.claude_model,
-            retry_max_attempts=s.retry_max_attempts,
-        )
+        Args:
+            container: Optional DI container. If None, creates default container.
+        """
+        self.container = container or AppContainer()
+        self.container.init_resources()  # Initialize database
 
     # ══════════════════════════════════════════════════════════════════
     # PIPELINE EXECUTION
@@ -104,45 +69,28 @@ class PipelineFacade:
 
         ``steps`` is one of: ingest, extract, verify, analyze, all.
         """
-        s = self._settings
-        tickers = tickers or s.target_tickers
-        quarters = quarters or s.target_quarters
+        settings = self.container.settings()
+        tickers = tickers or settings.target_tickers
+        quarters = quarters or settings.target_quarters
         result: Dict[str, Any] = {"steps_run": [], "tickers": tickers}
 
         if steps in ("ingest", "all"):
-            transcript_dir = Path(__file__).resolve().parent.parent / "data" / "transcripts"
-            svc = IngestionService(
-                self._fmp,
-                self._company_repo,
-                self._transcript_repo,
-                self._financial_repo,
-                transcript_dir=transcript_dir,
-            )
+            svc = self.container.ingestion_service()
             result["ingest"] = svc.ingest_all(tickers=tickers, quarters=quarters)
             result["steps_run"].append("ingest")
 
         if steps in ("extract", "all"):
-            extractor = ClaimExtractor(self._llm)
-            svc = ExtractionService(extractor, self._transcript_repo, self._claim_repo)
+            svc = self.container.extraction_service()
             result["extract"] = svc.extract_all()
             result["steps_run"].append("extract")
 
         if steps in ("verify", "all"):
-            mapper = MetricMapper()
-            engine = VerificationEngine(mapper, self._financial_repo, self._settings)
-            svc = VerificationService(engine, self._claim_repo, self._verification_repo)
+            svc = self.container.verification_service()
             result["verify"] = svc.verify_all()
             result["steps_run"].append("verify")
 
         if steps in ("analyze", "all"):
-            analyzer = DiscrepancyAnalyzer()
-            svc = AnalysisService(
-                analyzer,
-                self._company_repo,
-                self._claim_repo,
-                self._verification_repo,
-                self._pattern_repo,
-            )
+            svc = self.container.analysis_service()
             analyses = svc.analyze_all()
             result["analyze"] = {
                 "companies_analyzed": len(analyses),
@@ -158,10 +106,13 @@ class PipelineFacade:
 
     def list_companies(self) -> List[Dict[str, Any]]:
         """Return all companies with summary trust scores."""
-        companies = self._company_repo.get_all()
+        company_repo = self.container.company_repo()
+        claim_repo = self.container.claim_repo()
+
+        companies = company_repo.get_all()
         out: List[Dict[str, Any]] = []
         for c in companies:
-            claims = self._claim_repo.get_for_company(c.id)
+            claims = claim_repo.get_for_company(c.id)
             v, total, acc, trust = compute_stats(claims)
             out.append({
                 "ticker": c.ticker,
@@ -176,18 +127,12 @@ class PipelineFacade:
 
     def get_company_analysis(self, ticker: str) -> Optional[Dict[str, Any]]:
         """Full analysis for a company (re-computes from DB, persists patterns)."""
-        company = self._company_repo.get_by_ticker(ticker)
+        company_repo = self.container.company_repo()
+        company = company_repo.get_by_ticker(ticker)
         if not company:
             return None
 
-        analyzer = DiscrepancyAnalyzer()
-        svc = AnalysisService(
-            analyzer,
-            self._company_repo,
-            self._claim_repo,
-            self._verification_repo,
-            self._pattern_repo,
-        )
+        svc = self.container.analysis_service()
         try:
             analysis: CompanyAnalysis = svc.analyze_company(company.id)
             return analysis.model_dump()
@@ -200,11 +145,14 @@ class PipelineFacade:
         verdict_filter: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Return claims for a company, optionally filtered by verdict."""
-        company = self._company_repo.get_by_ticker(ticker)
+        company_repo = self.container.company_repo()
+        claim_repo = self.container.claim_repo()
+
+        company = company_repo.get_by_ticker(ticker)
         if not company:
             return []
 
-        claims = self._claim_repo.get_for_company(company.id)
+        claims = claim_repo.get_for_company(company.id)
         out: List[Dict[str, Any]] = []
         for c in claims:
             vf = c.verification
@@ -230,11 +178,14 @@ class PipelineFacade:
 
     def get_quarter_breakdown(self, ticker: str) -> List[Dict[str, Any]]:
         """Per-quarter verdict breakdown for a company."""
-        company = self._company_repo.get_by_ticker(ticker)
+        company_repo = self.container.company_repo()
+        claim_repo = self.container.claim_repo()
+
+        company = company_repo.get_by_ticker(ticker)
         if not company:
             return []
 
-        claims = self._claim_repo.get_for_company(company.id)
+        claims = claim_repo.get_for_company(company.id)
         quarter_map: Dict[str, list] = {}
         for c in claims:
             key = f"Q{c.transcript.quarter} {c.transcript.year}"
@@ -255,10 +206,13 @@ class PipelineFacade:
 
     def get_discrepancy_patterns(self, ticker: str) -> List[Dict[str, Any]]:
         """Return persisted cross-quarter discrepancy patterns."""
-        company = self._company_repo.get_by_ticker(ticker)
+        company_repo = self.container.company_repo()
+        pattern_repo = self.container.discrepancy_pattern_repo()
+
+        company = company_repo.get_by_ticker(ticker)
         if not company:
             return []
-        patterns = self._pattern_repo.get_for_company(company.id)
+        patterns = pattern_repo.get_for_company(company.id)
         return [
             {
                 "pattern_type": p.pattern_type,
@@ -276,11 +230,14 @@ class PipelineFacade:
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
         """Return top discrepancies (misleading/incorrect claims) for a company."""
-        company = self._company_repo.get_by_ticker(ticker)
+        company_repo = self.container.company_repo()
+        claim_repo = self.container.claim_repo()
+
+        company = company_repo.get_by_ticker(ticker)
         if not company:
             return []
 
-        claims = self._claim_repo.get_for_company(company.id)
+        claims = claim_repo.get_for_company(company.id)
         bad_claims = [
             c for c in claims
             if c.verification and c.verification.verdict in ("misleading", "incorrect")
@@ -315,7 +272,8 @@ class PipelineFacade:
 
     def get_all_patterns_grouped(self) -> Dict[int, List[Dict[str, Any]]]:
         """Return all discrepancy patterns grouped by company_id."""
-        patterns = self._pattern_repo.get_all_grouped()
+        pattern_repo = self.container.discrepancy_pattern_repo()
+        patterns = pattern_repo.get_all_grouped()
         return {
             company_id: [
                 {
@@ -330,12 +288,14 @@ class PipelineFacade:
             for company_id, pattern_list in patterns.items()
         }
 
-    # ── lifecycle ─────────────────────────────────────────────────────
+    # ══════════════════════════════════════════════════════════════════
+    # LIFECYCLE
+    # ══════════════════════════════════════════════════════════════════
 
     def close(self) -> None:
-        """Close database session and FMP client."""
-        self._db.close()
-        self._fmp.close()
+        """Close database session and clients."""
+        # Container manages lifecycle, just shutdown resources
+        self.container.shutdown_resources()
 
     def __enter__(self):
         return self

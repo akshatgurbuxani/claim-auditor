@@ -13,7 +13,8 @@ class BaseRepository(Generic[T]):
     """Thin data-access layer over SQLAlchemy.
 
     Subclasses add domain-specific queries.
-    All mutations go through the session so the caller controls commits.
+    Repositories only modify the session (add/delete/flush) - the caller
+    controls when to commit or rollback, enabling multi-step transactions.
     """
 
     def __init__(self, db: Session, model: Type[T]):
@@ -34,27 +35,31 @@ class BaseRepository(Generic[T]):
     # ── writes ───────────────────────────────────────────────────────
 
     def create(self, obj: T) -> T:
+        """Add object to session (caller must commit)."""
         self.db.add(obj)
-        self.db.commit()
-        self.db.refresh(obj)
+        self.db.flush()  # Assigns ID without committing
         return obj
 
     def create_many(self, objs: List[T]) -> List[T]:
+        """Add multiple objects to session (caller must commit)."""
         self.db.add_all(objs)
-        self.db.commit()
-        for obj in objs:
-            self.db.refresh(obj)
+        self.db.flush()  # Assigns IDs without committing
         return objs
 
     def update(self, obj: T) -> T:
-        self.db.commit()
-        self.db.refresh(obj)
+        """Mark object as modified (caller must commit).
+
+        SQLAlchemy's session already tracks changes to attached objects,
+        so this method just flushes to validate constraints.
+        """
+        self.db.flush()
         return obj
 
     def delete(self, id: int) -> bool:
+        """Mark object for deletion (caller must commit)."""
         obj = self.get(id)
         if obj:
             self.db.delete(obj)
-            self.db.commit()
+            self.db.flush()
             return True
         return False

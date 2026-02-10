@@ -3,6 +3,8 @@
 import logging
 from typing import Any, Dict
 
+from sqlalchemy.orm import Session
+
 from app.engines.verification_engine import VerificationEngine
 from app.models.verification import VerificationModel
 from app.repositories.claim_repo import ClaimRepository
@@ -14,10 +16,12 @@ logger = logging.getLogger(__name__)
 class VerificationService:
     def __init__(
         self,
+        db: Session,
         verification_engine: VerificationEngine,
         claim_repo: ClaimRepository,
         verification_repo: VerificationRepository,
     ):
+        self.db = db
         self.engine = verification_engine
         self.claims = claim_repo
         self.verifications = verification_repo
@@ -41,9 +45,11 @@ class VerificationService:
                     transcript_quarter=claim.transcript.quarter,
                 )
                 self.verifications.create(VerificationModel(**result.model_dump()))
+                self.db.commit()  # Commit per claim for fault tolerance
                 summary[result.verdict.value] += 1
             except Exception as exc:
-                logger.exception("Verification error for claim %d: %s", claim.id, exc)
+                self.db.rollback()  # Rollback failed verification
+                logger.exception("Verification error for claim %d (rolled back): %s", claim.id, exc)
                 summary["errors"] += 1
 
         return summary

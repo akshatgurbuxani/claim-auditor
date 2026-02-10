@@ -26,7 +26,7 @@ def _make_service(db) -> VerificationService:
     engine = VerificationEngine(mapper, financial_repo, settings)
     claim_repo = ClaimRepository(db)
     verification_repo = VerificationRepository(db)
-    return VerificationService(engine, claim_repo, verification_repo)
+    return VerificationService(db, engine, claim_repo, verification_repo)
 
 
 def _add_claim(db, transcript, **overrides) -> ClaimModel:

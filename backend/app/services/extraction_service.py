@@ -3,6 +3,8 @@
 import logging
 from typing import Any, Dict, List
 
+from sqlalchemy.orm import Session
+
 from app.engines.claim_extractor import ClaimExtractor
 from app.models.claim import ClaimModel
 from app.repositories.claim_repo import ClaimRepository
@@ -14,10 +16,12 @@ logger = logging.getLogger(__name__)
 class ExtractionService:
     def __init__(
         self,
+        db: Session,
         claim_extractor: ClaimExtractor,
         transcript_repo: TranscriptRepository,
         claim_repo: ClaimRepository,
     ):
+        self.db = db
         self.extractor = claim_extractor
         self.transcripts = transcript_repo
         self.claims = claim_repo
@@ -38,10 +42,12 @@ class ExtractionService:
                     c.transcript_id = transcript.id
                     self.claims.create(ClaimModel(**c.model_dump()))
 
+                self.db.commit()  # Commit per transcript for atomicity
                 summary["transcripts_processed"] += 1
                 summary["claims_extracted"] += len(claims)
             except Exception as exc:
-                logger.exception("Extraction error for transcript %d: %s", transcript.id, exc)
+                self.db.rollback()  # Rollback failed extraction
+                logger.exception("Extraction error for transcript %d (rolled back): %s", transcript.id, exc)
                 summary["errors"] += 1
 
         return summary
@@ -64,4 +70,6 @@ class ExtractionService:
             c.transcript_id = transcript.id
             model = self.claims.create(ClaimModel(**c.model_dump()))
             result.append(model)
+
+        self.db.commit()  # Commit all claims for this transcript
         return result

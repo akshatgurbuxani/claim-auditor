@@ -156,7 +156,7 @@ class TestAnalysisServiceBasic:
     def test_analyze_company_returns_complete_analysis(self, db, sample_company, sample_data):
         repos = self._build_repos(db)
         svc = AnalysisService(
-            DiscrepancyAnalyzer(), repos["company"], repos["claim"], repos["verification"],
+            db, DiscrepancyAnalyzer(), repos["company"], repos["claim"], repos["verification"],
         )
 
         analysis = svc.analyze_company(sample_company.id)
@@ -172,7 +172,7 @@ class TestAnalysisServiceBasic:
     def test_analyze_company_raises_for_missing_company(self, db):
         repos = self._build_repos(db)
         svc = AnalysisService(
-            DiscrepancyAnalyzer(), repos["company"], repos["claim"], repos["verification"],
+            db, DiscrepancyAnalyzer(), repos["company"], repos["claim"], repos["verification"],
         )
         with pytest.raises(ValueError, match="Company 999 not found"):
             svc.analyze_company(999)
@@ -180,7 +180,7 @@ class TestAnalysisServiceBasic:
     def test_analyze_all_returns_list(self, db, sample_company, sample_data):
         repos = self._build_repos(db)
         svc = AnalysisService(
-            DiscrepancyAnalyzer(), repos["company"], repos["claim"], repos["verification"],
+            db, DiscrepancyAnalyzer(), repos["company"], repos["claim"], repos["verification"],
         )
 
         results = svc.analyze_all()
@@ -206,7 +206,7 @@ class TestAnalysisServicePersistence:
         pattern_repo = DiscrepancyPatternRepository(db)
 
         svc = AnalysisService(
-            DiscrepancyAnalyzer(), company_repo, claim_repo, verification_repo, pattern_repo,
+            db, DiscrepancyAnalyzer(), company_repo, claim_repo, verification_repo, pattern_repo,
         )
 
         analysis = svc.analyze_company(sample_company.id)
@@ -230,7 +230,7 @@ class TestAnalysisServicePersistence:
         pattern_repo = DiscrepancyPatternRepository(db)
 
         svc = AnalysisService(
-            DiscrepancyAnalyzer(), company_repo, claim_repo, verification_repo, pattern_repo,
+            db, DiscrepancyAnalyzer(), company_repo, claim_repo, verification_repo, pattern_repo,
         )
 
         # Run twice
@@ -250,7 +250,7 @@ class TestAnalysisServicePersistence:
         verification_repo = VerificationRepository(db)
 
         svc = AnalysisService(
-            DiscrepancyAnalyzer(), company_repo, claim_repo, verification_repo,
+            db, DiscrepancyAnalyzer(), company_repo, claim_repo, verification_repo,
             pattern_repo=None,
         )
 

@@ -57,7 +57,6 @@ class Settings(BaseSettings):
     # Different companies have different fiscal-year ends, so we cast a
     # wide net and skip quarters with no data.
     target_quarters: list[tuple[int, int]] = [
-        (2026, 3), (2026, 2), (2026, 1),
         (2025, 4), (2025, 3), (2025, 2), (2025, 1),
     ]
 

@@ -135,7 +135,9 @@ class TestFullPipeline:
         # ═════════════════════════════════════════════════════════════
         # STEP 1: Ingest
         # ═════════════════════════════════════════════════════════════
-        ingestion = IngestionService(mock_fmp, company_repo, transcript_repo, financial_repo)
+        ingestion = IngestionService(
+            db, mock_fmp, company_repo, transcript_repo, financial_repo, settings=settings
+        )
         ingest_result = ingestion.ingest_all(
             tickers=["AAPL"],
             quarters=[(2024, 3)],
@@ -166,7 +168,7 @@ class TestFullPipeline:
         # ═════════════════════════════════════════════════════════════
         llm = FixtureLLMClient()
         extractor = ClaimExtractor(llm)
-        extraction = ExtractionService(extractor, transcript_repo, claim_repo)
+        extraction = ExtractionService(db, extractor, transcript_repo, claim_repo)
         extract_result = extraction.extract_all()
 
         assert extract_result["transcripts_processed"] == 1
@@ -188,7 +190,7 @@ class TestFullPipeline:
         # ═════════════════════════════════════════════════════════════
         mapper = MetricMapper()
         ver_engine = VerificationEngine(mapper, financial_repo, settings)
-        verification = VerificationService(ver_engine, claim_repo, verification_repo)
+        verification = VerificationService(db, ver_engine, claim_repo, verification_repo)
         verify_result = verification.verify_all()
 
         total_verified = sum(v for k, v in verify_result.items() if k != "errors")
@@ -242,7 +244,7 @@ class TestFullPipeline:
         pattern_repo = DiscrepancyPatternRepository(db)
         analyzer = DiscrepancyAnalyzer()
         analysis_svc = AnalysisService(
-            analyzer, company_repo, claim_repo, verification_repo, pattern_repo,
+            db, analyzer, company_repo, claim_repo, verification_repo, pattern_repo,
         )
         analysis = analysis_svc.analyze_company(company.id)
 
@@ -289,7 +291,7 @@ class TestFullPipeline:
         transcript_repo = TranscriptRepository(db)
         financial_repo = FinancialDataRepository(db)
 
-        ingestion = IngestionService(mock_fmp, company_repo, transcript_repo, financial_repo)
+        ingestion = IngestionService(db, mock_fmp, company_repo, transcript_repo, financial_repo)
         result = ingestion.ingest_all(tickers=["ZZZZZ"], quarters=[(2024, 3)])
 
         # Should not crash, just report 0 data

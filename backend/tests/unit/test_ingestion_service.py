@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.clients.fmp_client import FMPClient, FMPTranscript
+from app.config import Settings
 from app.models.company import CompanyModel
 from app.models.financial_data import FinancialDataModel
 from app.models.transcript import TranscriptModel
@@ -25,7 +26,11 @@ def _make_service(db) -> tuple[IngestionService, MagicMock]:
     company_repo = CompanyRepository(db)
     transcript_repo = TranscriptRepository(db)
     financial_repo = FinancialDataRepository(db)
-    service = IngestionService(mock_fmp, company_repo, transcript_repo, financial_repo)
+    # Create settings without API key to prevent LLM fallback in tests
+    settings = Settings(anthropic_api_key="")
+    service = IngestionService(
+        db, mock_fmp, company_repo, transcript_repo, financial_repo, settings=settings
+    )
     return service, mock_fmp
 
 
@@ -212,3 +217,139 @@ class TestMatchHelper:
         ]
         result = IngestionService._match(entries, 2024, 3)
         assert result is None
+
+
+# ── LLM Generation Tests ─────────────────────────────────────────────────
+
+
+class TestLLMTranscriptGeneration:
+    """Test the three-tier transcript fallback: FMP → local file → LLM."""
+
+    def test_llm_generation_not_used_when_fmp_succeeds(self, db, sample_company):
+        """When FMP returns a transcript, LLM generation is not triggered."""
+        service, mock_fmp = _make_service(db)
+
+        # FMP returns transcript
+        mock_fmp.get_transcript.return_value = FMPTranscript(
+            ticker="AAPL",
+            quarter=2,
+            year=2025,
+            call_date=date(2025, 5, 1),
+            content="FMP transcript content",
+        )
+
+        result = service.ingest_all(tickers=["AAPL"], quarters=[(2025, 2)])
+
+        assert result["transcripts_fetched"] == 1
+        # Verify it used FMP transcript, not LLM
+        transcript_repo = TranscriptRepository(db)
+        transcript = transcript_repo.get_for_quarter(sample_company.id, 2025, 2)
+        assert transcript.full_text == "FMP transcript content"
+
+    def test_llm_generation_triggered_when_fmp_and_file_fail(
+        self, db, sample_company, sample_financial_data, tmp_path
+    ):
+        """When FMP and local file fail, LLM generation is triggered."""
+        mock_fmp = MagicMock(spec=FMPClient)
+        company_repo = CompanyRepository(db)
+        transcript_repo = TranscriptRepository(db)
+        financial_repo = FinancialDataRepository(db)
+
+        # Create settings with Anthropic API key to enable LLM generation
+        settings = Settings(anthropic_api_key="test-key-for-llm")
+
+        # Use tmp_path for transcript directory
+        service = IngestionService(
+            db,
+            mock_fmp,
+            company_repo,
+            transcript_repo,
+            financial_repo,
+            transcript_dir=tmp_path,
+            settings=settings,
+        )
+
+        # FMP returns None (no transcript)
+        mock_fmp.get_transcript.return_value = None
+
+        # Mock Anthropic API call
+        with patch.object(service, "_anthropic_client") as mock_anthropic:
+            mock_response = MagicMock()
+            mock_response.content = [MagicMock(text="LLM generated transcript content")]
+            mock_anthropic.messages.create.return_value = mock_response
+
+            result = service.ingest_all(tickers=["AAPL"], quarters=[(2025, 3)])
+
+            # LLM should have been called
+            mock_anthropic.messages.create.assert_called_once()
+
+            # Transcript should be created with LLM content
+            assert result["transcripts_fetched"] == 1
+            transcript = transcript_repo.get_for_quarter(sample_company.id, 2025, 3)
+            assert transcript.full_text == "LLM generated transcript content"
+
+            # LLM-generated transcript should be saved to file
+            saved_file = tmp_path / "AAPL_Q3_2025.txt"
+            assert saved_file.exists()
+            assert saved_file.read_text() == "LLM generated transcript content"
+
+    def test_llm_generation_skipped_when_no_financial_data(self, db, sample_company, tmp_path):
+        """LLM generation is skipped if no financial data exists for the quarter."""
+        mock_fmp = MagicMock(spec=FMPClient)
+        company_repo = CompanyRepository(db)
+        transcript_repo = TranscriptRepository(db)
+        financial_repo = FinancialDataRepository(db)
+
+        settings = Settings(anthropic_api_key="test-key")
+
+        service = IngestionService(
+            db,
+            mock_fmp,
+            company_repo,
+            transcript_repo,
+            financial_repo,
+            transcript_dir=tmp_path,
+            settings=settings,
+        )
+
+        # FMP returns None
+        mock_fmp.get_transcript.return_value = None
+
+        with patch.object(service, "_anthropic_client") as mock_anthropic:
+            result = service.ingest_all(tickers=["AAPL"], quarters=[(2025, 4)])
+
+            # LLM should NOT be called (no financial data for Q4 2025)
+            mock_anthropic.messages.create.assert_not_called()
+
+            # No transcript should be created
+            assert result["transcripts_fetched"] == 0
+
+    def test_llm_generation_skipped_when_no_api_key(
+        self, db, sample_company, sample_financial_data, tmp_path
+    ):
+        """LLM generation is skipped if Anthropic API key is not configured."""
+        mock_fmp = MagicMock(spec=FMPClient)
+        company_repo = CompanyRepository(db)
+        transcript_repo = TranscriptRepository(db)
+        financial_repo = FinancialDataRepository(db)
+
+        # No API key
+        settings = Settings(anthropic_api_key="")
+
+        service = IngestionService(
+            db,
+            mock_fmp,
+            company_repo,
+            transcript_repo,
+            financial_repo,
+            transcript_dir=tmp_path,
+            settings=settings,
+        )
+
+        # FMP returns None
+        mock_fmp.get_transcript.return_value = None
+
+        result = service.ingest_all(tickers=["AAPL"], quarters=[(2025, 3)])
+
+        # No transcript should be created (LLM not available)
+        assert result["transcripts_fetched"] == 0

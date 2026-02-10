@@ -11,8 +11,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from dependency_injector import providers
 
 from app.config import Settings
+from app.container import AppContainer
 from app.database import Base
 from app.facade import PipelineFacade
 from app.models.claim import ClaimModel
@@ -131,29 +133,41 @@ def _seed(db: Session) -> CompanyModel:
 def _build_facade_with_seeded_db() -> PipelineFacade:
     """Build a PipelineFacade that uses a seeded in-memory DB.
 
-    We monkey-patch the internal wiring so no real APIs are touched.
+    Uses the DI container pattern with mocked external clients.
     """
-    facade = PipelineFacade.__new__(PipelineFacade)
-    facade._settings = Settings(
-        database_url="sqlite:///:memory:",
-        fmp_api_key="test-key",
-        anthropic_api_key="test-key",
-    )
+    # Create in-memory database
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
 
-    # Build real in-memory DB
-    db = _in_memory_db()
-    facade._db = db
-    facade._engine = db.bind
-
-    # Set up real repos on the in-memory DB
-    facade._setup_repos()
+    # Create container and override with test database
+    container = AppContainer()
+    container.db_engine.override(providers.Object(engine))
+    container.db_session.override(providers.Factory(lambda: SessionLocal()))
 
     # Mock external clients (never call real APIs)
-    facade._fmp = MagicMock()
-    facade._llm = MagicMock()
+    class MockFMPClient:
+        def get_company_profile(self, ticker):
+            return {"ticker": ticker, "name": f"{ticker} Inc", "sector": "Technology"}
+        def get_financial_statements(self, ticker, year, quarter):
+            return []
+        def get_earnings_transcript(self, ticker, year, quarter):
+            return None
+
+    class MockLLMClient:
+        def extract_claims(self, transcript_text):
+            return []
+
+    container.fmp_client.override(providers.Factory(MockFMPClient))
+    container.llm_client.override(providers.Factory(MockLLMClient))
 
     # Seed test data
+    db = SessionLocal()
     _seed(db)
+    db.close()
+
+    # Create facade with test container
+    facade = PipelineFacade(container=container)
 
     return facade
 
@@ -187,14 +201,23 @@ class TestFacadeListCompanies:
         assert verdicts["incorrect"] == 1
 
     def test_empty_db_returns_empty_list(self):
-        facade = PipelineFacade.__new__(PipelineFacade)
-        facade._settings = Settings(database_url="sqlite:///:memory:")
-        db = _in_memory_db()
-        facade._db = db
-        facade._engine = db.bind
-        facade._setup_repos()
-        facade._fmp = MagicMock()
-        facade._llm = MagicMock()
+        # Create empty in-memory database
+        engine = create_engine("sqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        SessionLocal = sessionmaker(bind=engine)
+
+        # Create container with test database
+        container = AppContainer()
+        container.db_engine.override(providers.Object(engine))
+        container.db_session.override(providers.Factory(lambda: SessionLocal()))
+
+        # Mock clients
+        container.fmp_client.override(providers.Factory(MagicMock))
+        container.llm_client.override(providers.Factory(MagicMock))
+
+        # Create facade with empty database
+        facade = PipelineFacade(container=container)
+
         assert facade.list_companies() == []
 
 

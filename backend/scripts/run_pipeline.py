@@ -93,7 +93,7 @@ def main():
 
     t0 = time.time()
 
-    with PipelineFacade(settings=settings) as facade:
+    with PipelineFacade() as facade:
         result = facade.run_pipeline(
             tickers=tickers,
             quarters=settings.target_quarters,
