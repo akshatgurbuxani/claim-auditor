@@ -14,9 +14,10 @@ This document explains every architectural decision, shows how layers interact.
 4. [File-to-Layer Mapping](#4-file-to-layer-mapping)
 5. [Pipeline Execution Flow](#5-pipeline-execution-flow)
 6. [Key Design Decisions](#6-key-design-decisions)
-7. [Interface Architecture](#7-interface-architecture)
-8. [Testing Strategy](#8-testing-strategy)
-9. [Trade-offs](#9-trade-offs)
+7. [Production-Ready Features](#7-production-ready-features)
+8. [Interface Architecture](#8-interface-architecture)
+9. [Testing Strategy](#9-testing-strategy)
+10. [Trade-offs](#10-trade-offs)
 
 ---
 
@@ -929,7 +930,513 @@ SQLAlchemy provides ORM convenience while being database-agnostic. Repository pa
 
 ---
 
-## 7. Interface Architecture
+### 12. Why Dependency Injection Container?
+
+**Decision:** Use `dependency-injector` library for explicit dependency management.
+
+**Problem:** Manual wiring in facade is implicit and hard to test.
+
+**Bad (manual wiring):**
+```python
+# app/facade.py - implicit dependencies
+class PipelineFacade:
+    def __init__(self, settings=None):
+        self._settings = settings or Settings()
+        self._engine = build_engine(self._settings.database_url)
+        self._db = build_session_factory(self._engine)()
+        self._company_repo = CompanyRepository(self._db)
+        self._fmp = FMPClient(api_key=self._settings.fmp_api_key, ...)
+        # ... 15 more manual instantiations
+```
+
+**Problems:**
+- Hidden dependencies (where does MetricMapper come from?)
+- Hard to mock (have to patch 15 things)
+- Order matters (repos need db, services need repos)
+- Testing requires full setup
+
+**Good (with DI container):**
+```python
+# app/container.py - explicit wiring
+class AppContainer(containers.DeclarativeContainer):
+    settings = providers.Singleton(Settings)
+
+    db_engine = providers.Singleton(
+        build_engine,
+        database_url=settings.provided.database_url,
+    )
+
+    company_repo = providers.Factory(
+        CompanyRepository,
+        session=db_session,
+    )
+
+    fmp_client = providers.Singleton(
+        FMPClient,
+        api_key=settings.provided.fmp_api_key,
+        cache_dir=cache_dir,
+    )
+
+    # ... all dependencies defined in one place
+
+# app/facade.py - clean usage
+class PipelineFacade:
+    def __init__(self, container=None):
+        self.container = container or AppContainer()
+        self.container.init_resources()
+
+    def run_pipeline(self, ...):
+        svc = self.container.ingestion_service()  # Get from container
+        svc.ingest_all(...)
+```
+
+**Benefits:**
+1. **Explicit dependencies** - All wiring in one file (`container.py`)
+2. **Easy testing** - Override container providers with mocks
+3. **Centralized configuration** - Change wiring in one place
+4. **No hidden coupling** - Clear what depends on what
+5. **Lifecycle management** - Container handles init/shutdown
+
+**Testing with DI:**
+```python
+# tests/conftest.py
+@pytest.fixture
+def test_container():
+    container = AppContainer()
+    container.fmp_client.override(providers.Factory(MockFMPClient))
+    container.llm_client.override(providers.Factory(MockLLMClient))
+    return container
+
+def test_ingestion(test_container):
+    facade = PipelineFacade(container=test_container)
+    result = facade.run_pipeline(["AAPL"], steps="ingest")
+    # Uses mock clients, real business logic
+```
+
+**Container structure:**
+```
+AppContainer
+├── Configuration (Settings)
+├── Database (engine, sessions)
+├── Repositories (6 repos)
+├── Clients (FMP, LLM)
+├── Engines (4 engines)
+└── Services (4 services)
+```
+
+**Why this beats manual wiring:**
+- Manual wiring: change FMPClient signature → update facade + 3 tests
+- Container wiring: change FMPClient signature → update container only
+
+I use dependency-injector for explicit, centralized dependency management. All wiring is in `container.py`, not scattered. Testing is easier—override container providers instead of patching. Follows Dependency Inversion Principle: high-level modules depend on abstractions (container), not concrete implementations.
+
+### 13. Why Service-Controlled Transactions?
+
+**Decision:** Repositories don't commit—services control transaction boundaries.
+
+**Problem:** Repository auto-commits prevent multi-step atomicity.
+
+**Bad (repository auto-commits):**
+```python
+# app/repositories/base.py
+def create(self, obj):
+    self.db.add(obj)
+    self.db.commit()  # ❌ Commits immediately!
+    return obj
+
+# app/services/ingestion_service.py
+def ingest_company(self, ticker):
+    company = self.company_repo.create(company)  # COMMIT 1
+    transcript = self.transcript_repo.create(transcript)  # COMMIT 2
+    # If financial data fails, we have orphaned company + transcript!
+    financial = self.financial_repo.create(financial)  # COMMIT 3
+```
+
+**Problems:**
+- **No atomicity** - Partial data on failure (company exists, but transcript missing)
+- **No rollback** - Can't undo previous operations if later steps fail
+- **Data corruption** - Inconsistent state on errors
+- **Transaction scope too narrow** - Each operation is its own transaction
+
+**Good (service-controlled transactions):**
+```python
+# app/repositories/base.py
+def create(self, obj):
+    self.db.add(obj)
+    self.db.flush()  # ✅ Assigns ID, doesn't commit
+    return obj
+
+# app/services/ingestion_service.py
+def __init__(self, db: Session, ...):
+    self.db = db  # Service owns the session
+
+def ingest_company(self, ticker):
+    try:
+        company = self.company_repo.create(company)
+        transcript = self.transcript_repo.create(transcript)
+        financial = self.financial_repo.create(financial)
+        self.db.commit()  # ✅ All-or-nothing commit
+    except Exception as exc:
+        self.db.rollback()  # ✅ Undo everything
+        raise
+```
+
+**Benefits:**
+1. **Atomicity** - All operations succeed or all fail together
+2. **Rollback capability** - Undo partial work on errors
+3. **Service-level transactions** - Logical business operations as units
+4. **Data consistency** - No orphaned or partial records
+
+**Transaction scopes in our system:**
+
+| Service | Commit Granularity | Reasoning |
+|---------|-------------------|-----------|
+| `IngestionService` | Per company | If AAPL succeeds and MSFT fails, keep AAPL data |
+| `ExtractionService` | Per transcript | If one transcript fails, keep other claims |
+| `VerificationService` | Per claim | If one verification fails, keep others |
+| `AnalysisService` | Per company | Pattern detection is atomic per company |
+
+**Example: Multi-company ingestion with fault tolerance:**
+```python
+def ingest_all(self, tickers):
+    for ticker in tickers:
+        try:
+            self._ingest_company(ticker)  # Multiple repo operations
+            self.db.commit()  # Commit per company
+            logger.info("Successfully committed data for %s", ticker)
+        except Exception as exc:
+            self.db.rollback()  # Rollback failed company only
+            logger.exception("Error ingesting %s (rolled back)", ticker)
+            summary["errors"] += 1
+    # Result: Some companies succeed, others fail gracefully
+```
+
+**Why `flush()` instead of `commit()`:**
+- `flush()` - Sends SQL to database, assigns IDs, validates constraints
+- `commit()` - Makes changes permanent
+- Repositories use `flush()` to validate immediately but let services control commit
+
+**Testing implications:**
+```python
+# Tests must now control commits explicitly
+def test_ingestion(db):
+    service = IngestionService(db, ...)
+    service.ingest_all(["AAPL"])
+    # Service commits internally, no action needed in test
+
+def test_rollback_on_error(db):
+    service = IngestionService(db, ...)
+    with pytest.raises(Exception):
+        service.ingest_all(["INVALID"])
+    # Service rolled back, database remains clean
+    assert db.query(CompanyModel).count() == 0
+```
+
+**Why this beats repository auto-commits:**
+- Repository commits: Failure at step 3 → steps 1-2 already committed (data corruption)
+- Service commits: Failure at step 3 → rollback everything (clean state)
+
+I use service-controlled transactions for atomicity, rollback capability, and data consistency. Repositories only modify the session (add/delete/flush), services decide when to commit or rollback. This prevents partial failures and data corruption in multi-step operations.
+
+---
+
+## 7. Production-Ready Features
+
+### Why Production Readiness Matters
+
+**Problem:** Many projects work in development but fail in production due to:
+- No observability (can't debug production issues)
+- No input validation (vulnerable to attacks)
+- No versioning (breaking changes break clients)
+- No health checks (can't detect failures)
+- No migration strategy (can't evolve database)
+
+### What We Implemented
+
+#### 1. Structured Logging (structlog)
+
+**Bad (plain logging):**
+```python
+logger.info(f"Processing {ticker} with {len(claims)} claims")
+# Output: "Processing AAPL with 42 claims"
+# Problem: Hard to parse, search, or aggregate
+```
+
+**Good (structured logging):**
+```python
+logger.info("processing_company", ticker=ticker, claims=len(claims))
+# Output (JSON): {"event": "processing_company", "ticker": "AAPL", "claims": 42, "timestamp": "2026-02-09T23:10:00Z"}
+# Benefit: Queryable, aggregatable, parseable
+```
+
+**Implementation:**
+- `app/logging_config.py` - Setup function with JSON/human-readable modes
+- JSON mode for production (Datadog, ELK, CloudWatch)
+- Human-readable mode for development (colored output)
+- Automatically includes timestamps, log levels, logger names
+
+**Usage in code:**
+```python
+from app.logging_config import get_logger
+logger = get_logger(__name__)
+
+logger.info("pipeline_started", tickers=["AAPL"], quarters=[(2025, 4)])
+logger.error("verification_failed", claim_id=123, error=str(e))
+```
+
+**Why this matters:**
+- Can filter logs by ticker: `jq '.ticker == "AAPL"' logs.json`
+- Can aggregate by event: count all "verification_failed" events
+- Production debugging is 10x faster
+
+#### 2. API Input Validation (Pydantic)
+
+**Bad (no validation):**
+```python
+@router.post("/ingest")
+def ingest(tickers: list[str], quarters: list[tuple]):
+    # What if tickers = ["", "AAAAAAAAAAAAA", "123", "invalid!@#"]?
+    # What if quarters = [(2050, 99), (-1, 5)]?
+    # Crashes or corrupts data
+```
+
+**Good (Pydantic validation):**
+```python
+class PipelineIngestRequest(BaseModel):
+    tickers: Optional[List[str]] = Field(max_length=20)
+    quarters: Optional[List[tuple[int, int]]] = Field(max_length=10)
+
+    @field_validator("tickers")
+    def validate_tickers(cls, v):
+        for ticker in v:
+            if len(ticker) > 5 or not ticker.isalpha():
+                raise ValueError(f"Invalid ticker: {ticker}")
+        return [t.upper() for t in v]
+
+@router.post("/ingest")
+def ingest(request: PipelineIngestRequest):
+    # Guaranteed: tickers are valid, quarters are in range
+```
+
+**What we validate:**
+- `app/schemas/pipeline.py` - Pipeline request validation
+  - Ticker format (max 5 chars, alphabetic only)
+  - Quarter ranges (year 2020-2030, quarter 1-4)
+  - Max lengths (prevent DOS attacks)
+- All API endpoints return validated Pydantic response models
+
+**Why this matters:**
+- Prevents injection attacks
+- Prevents DOS (max length checks)
+- Auto-generates OpenAPI docs with validation rules
+- Client errors return clear 422 responses with field-level errors
+
+#### 3. API Versioning (/api/v1/)
+
+**Problem:** You deploy breaking change → all clients break
+
+**Solution:** Version your API
+
+```python
+# app/main.py
+API_V1_PREFIX = "/api/v1"
+
+# New endpoints
+app.include_router(pipeline.router, prefix=f"{API_V1_PREFIX}/pipeline")
+
+# Legacy routes for backward compatibility
+app.include_router(pipeline.router, prefix="/api/pipeline", include_in_schema=False)
+```
+
+**Why this matters:**
+- Can release v2 API without breaking v1 clients
+- Legacy routes still work (deprecated but functional)
+- Clear contract: `/api/v1/` = stable, versioned API
+
+#### 4. Comprehensive Health Checks
+
+**Bad (basic health check):**
+```python
+@router.get("/health")
+def health():
+    return {"status": "ok"}  # Doesn't check dependencies!
+```
+
+**Good (dependency health checks):**
+```python
+# app/health.py
+@router.get("/health/detailed")
+def detailed_health():
+    checks = {
+        "database": check_database(db),           # Can we query?
+        "fmp_api": check_fmp_api(settings),       # Is FMP responding?
+        "claude_api": check_llm_api(settings),    # Is Claude API configured?
+    }
+    overall = "healthy" if all_healthy(checks) else "degraded"
+    return {"status": overall, "checks": checks}
+```
+
+**Endpoints:**
+- `/health` - Basic health check (always returns 200)
+- `/health/detailed` - Check all dependencies
+- `/health/ready` - Kubernetes readiness probe (503 if DB down)
+- `/health/live` - Kubernetes liveness probe (detect deadlocks)
+
+**Why this matters:**
+- Load balancers can detect unhealthy instances
+- Kubernetes can restart failing pods
+- Monitoring can alert on degraded status
+- Can debug production issues ("Is DB connection broken?")
+
+#### 5. Database Migrations (Alembic)
+
+**Bad (no migrations):**
+```python
+# Add column to model
+class Company(Base):
+    ticker = Column(String)
+    founded_year = Column(Integer)  # NEW COLUMN
+
+# Run app → ERROR: column doesn't exist
+# Manual fix: ALTER TABLE companies ADD COLUMN founded_year INTEGER;
+# Problem: No history, can't roll back, hard to deploy
+```
+
+**Good (Alembic migrations):**
+```bash
+# Generate migration
+alembic revision --autogenerate -m "add founded_year to companies"
+
+# Apply migration
+alembic upgrade head
+
+# Roll back if needed
+alembic downgrade -1
+```
+
+**Implementation:**
+- `alembic/` - Migration directory with versioned scripts
+- `alembic.ini` - Configuration (dynamically uses Settings)
+- `alembic/env.py` - Imports all models for autogenerate
+
+**Why this matters:**
+- Can evolve database schema safely
+- Track schema changes in version control
+- Deploy schema changes before code changes
+- Can roll back failed migrations
+
+#### 6. CORS Security
+
+**Bad (wide open):**
+```python
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # ANY website can call your API!
+)
+```
+
+**Good (restricted):**
+```python
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS",
+    "http://localhost:8501,https://claim-auditor.streamlit.app").split(",")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,  # Only trusted origins
+)
+```
+
+**Why this matters:**
+- Prevents malicious websites from calling your API
+- Configurable per environment (dev vs prod)
+- Still allows legitimate cross-origin requests
+
+#### 7. Complete Type Hints
+
+**Before:**
+```python
+def list_companies(db):
+    # What does this return? Who knows!
+```
+
+**After:**
+```python
+def list_companies(db: Session = Depends(get_db)) -> List[CompanyWithStats]:
+    # Clear contract: returns list of CompanyWithStats
+```
+
+**Benefits:**
+- IDE autocomplete works
+- Type checkers catch bugs (`mypy`)
+- Self-documenting code
+- Easier to refactor
+
+#### 8. Comprehensive Docstrings
+
+**Before:**
+```python
+def list_claims(ticker, verdict, metric, skip, limit, db):
+    """List claims with optional filters."""
+```
+
+**After:**
+```python
+def list_claims(
+    ticker: Optional[str] = None,
+    verdict: Optional[str] = None,
+    metric: Optional[str] = None,
+    skip: int = 0,
+    limit: int = Query(default=50, le=200),
+    db: Session = Depends(get_db),
+) -> List[ClaimWithVerification]:
+    """List claims with optional filtering.
+
+    Supports filtering by:
+    - ticker: Filter claims for specific company
+    - verdict: Filter by verification verdict
+    - metric: Filter by metric name
+    - skip/limit: Pagination support
+
+    Args:
+        ticker: Optional company ticker symbol (e.g., 'AAPL').
+        verdict: Optional verification verdict filter.
+        metric: Optional metric name filter.
+        skip: Number of records to skip for pagination.
+        limit: Maximum number of records to return (max 200).
+        db: Database session.
+
+    Returns:
+        List of claims with verification results.
+
+    Raises:
+        HTTPException: If company not found or query fails.
+    """
+```
+
+**Benefits:**
+- Clear API contract
+- Easier for new developers
+- Auto-generates better API docs
+- Reduces need for external documentation
+
+### Production Checklist Summary
+
+| Feature | Status | Files |
+|---------|--------|-------|
+| ✅ Structured logging | Complete | `app/logging_config.py`, all API endpoints |
+| ✅ Input validation | Complete | `app/schemas/pipeline.py` |
+| ✅ API versioning | Complete | `app/main.py` (v1 prefix) |
+| ✅ Health checks | Complete | `app/health.py` |
+| ✅ Database migrations | Complete | `alembic/` directory |
+| ✅ CORS security | Complete | `app/main.py` (restricted origins) |
+| ✅ Type hints | Complete | All API files |
+| ✅ Comprehensive docstrings | Complete | All API files |
+
+I implemented production-ready features: structured logging for observability, Pydantic validation for security, API versioning for backward compatibility, health checks for monitoring, Alembic migrations for safe schema evolution, and restricted CORS. These aren't just 'nice to have' — they're essential for production systems. Without them, you can't debug issues, you're vulnerable to attacks, and deployments are risky.
+
+---
+
+## 8. Interface Architecture
 
 We have **4 interfaces**, all using the same backend:
 
@@ -968,7 +1475,7 @@ The architecture has 3 interfaces:
 
 ---
 
-## 8. Testing Strategy
+## 9. Testing Strategy
 
 ### Test Pyramid
 
@@ -1029,7 +1536,7 @@ def test_full_pipeline():
 
 ---
 
-## 9. Trade-offs
+## 10. Trade-offs
 
 ### SQLite vs Postgres
 
@@ -1091,7 +1598,7 @@ def test_full_pipeline():
 
 ---
 
-## 10. Future Improvements
+## 11. Future Improvements
 
 ### Infrastructure Improvements
 

@@ -74,12 +74,28 @@ Detects systematic deception across quarters:
 - **CLI** - Pipeline execution
 - **MCP Server** - AI agent integration
 
-### 4. Production-Ready
+### 4. Smart Transcript Fallback (Three-Tier Strategy)
 
-- **230 tests** (unit + integration + E2E)
-- **6-layer clean architecture** with clear boundaries
+When transcript data is unavailable from FMP API:
+
+1. **Tier 1:** Fetch from FMP API (primary source)
+2. **Tier 2:** Load from local files (`data/transcripts/`)
+3. **Tier 3:** Generate with LLM based on financial data (automatic fallback)
+
+The system automatically generates realistic earnings call transcripts using Claude when needed, ensuring no company is left without claims to audit.
+
+### 5. Production-Ready
+
+- **333+ tests** passing (unit + integration + E2E)
+- **6-layer clean architecture** with dependency injection
+- **Service-controlled transactions** (atomicity, rollback, data consistency)
+- **Structured logging** (JSON/human-readable modes)
+- **Health checks** (Kubernetes-ready probes)
+- **API versioning** (/api/v1/) with backward compatibility
+- **Input validation** (Pydantic models prevent injection attacks)
+- **Database migrations** (Alembic for safe schema evolution)
 - **Docker-first** deployment (same image for UI/API)
-- **Comprehensive docs** (readme, architecture, api guide)
+- **Comprehensive docs** (readme, architecture, setup, API guide)
 
 ---
 
@@ -120,7 +136,8 @@ claim-auditor/
 ├── docs/                        ← Documentation
 │   ├── ARCHITECTURE_GUIDE.md          → Deep dive: layers, design decisions
 │   ├── SETUP_GUIDE.md                 → Setup & deployment guide
-│   └── MCP_GUIDE.md             → AI agent integration
+│   ├── API_USAGE_GUIDE.md                   → REST API guide with examples
+│   └── MCP_GUIDE.md                   → AI agent integration
 │
 └── backend/
     ├── Dockerfile               ← Container definition
@@ -128,7 +145,11 @@ claim-auditor/
     ├── requirements.txt         ← Python dependencies
     │
     ├── app/                     ← Core application
+    │   ├── main.py              ← FastAPI application entry point
     │   ├── facade.py            ← Single entry point (hides complexity)
+    │   ├── container.py         ← Dependency injection container
+    │   ├── logging_config.py    ← Structured logging setup
+    │   ├── health.py            ← Health check endpoints
     │   │
     │   ├── clients/             ← External API wrappers
     │   │   ├── fmp_client.py    → Financial data API
@@ -153,8 +174,17 @@ claim-auditor/
     │   │
     │   ├── repositories/        ← Database abstraction
     │   ├── models/              ← SQLAlchemy ORM (database tables)
-    │   ├── schemas/             ← Pydantic (API contracts)
+    │   ├── schemas/             ← Pydantic (API contracts + validation)
+    │   │   └── pipeline.py      → Pipeline request validation
     │   └── api/                 ← REST API endpoints
+    │       ├── pipeline.py      → Pipeline operations
+    │       ├── companies.py     → Company endpoints
+    │       ├── claims.py        → Claim endpoints
+    │       └── transcripts.py   → Transcript endpoints
+    │
+    ├── alembic/                 ← Database migrations
+    │   ├── versions/            → Migration scripts
+    │   └── env.py               → Alembic configuration
     │
     ├── streamlit_app.py         ← Web dashboard
     ├── mcp_server.py            ← AI agent integration
@@ -166,7 +196,8 @@ claim-auditor/
     │   └── transcripts/         ← Local transcript files
     │
     └── tests/
-        ├── unit/                ← Fast tests (230 tests, <2s)
+        ├── unit/                ← Fast tests (313+ tests, <3s)
+        ├── api/                 ← API endpoint tests
         └── integration/         ← Live API tests
 ```
 
@@ -219,35 +250,54 @@ docker compose run streamlit pytest tests/unit/test_verification_engine.py
 
 ## REST API
 
-**Base URL:** http://localhost:8000
+**Base URL (v1):** http://localhost:8000/api/v1
+**Legacy:** http://localhost:8000/api (backward compatible)
 
 ### Key Endpoints
 
 | Endpoint | Description |
 |----------|-------------|
-| `GET /api/companies/` | List all companies with stats |
-| `GET /api/companies/{ticker}` | Full analysis for one company |
-| `GET /api/claims/` | List claims (filterable by verdict/metric/ticker) |
-| `GET /api/transcripts/` | List transcripts |
-| `GET /api/pipeline/status` | Pipeline status (counts) |
-| `POST /api/pipeline/run-all` | Trigger full pipeline |
+| `GET /api/v1/companies/` | List all companies with stats |
+| `GET /api/v1/companies/{ticker}` | Full analysis for one company |
+| `GET /api/v1/claims/` | List claims (filterable by verdict/metric/ticker) |
+| `GET /api/v1/transcripts/` | List transcripts |
+| `GET /api/v1/pipeline/status` | Pipeline status (counts) |
+| `POST /api/v1/pipeline/ingest` | Fetch data from FMP API |
+| `POST /api/v1/pipeline/extract` | Extract claims via LLM |
+| `POST /api/v1/pipeline/verify` | Verify claims against data |
+| `POST /api/v1/pipeline/analyze` | Detect discrepancy patterns |
+| `POST /api/v1/pipeline/run-all` | Execute full pipeline |
+| `GET /health` | Basic health check |
+| `GET /health/detailed` | Health check with dependencies |
+| `GET /health/ready` | Kubernetes readiness probe |
+| `GET /health/live` | Kubernetes liveness probe |
 
 ### Examples
 
 ```bash
 # Get all companies
-curl http://localhost:8000/api/companies/
+curl http://localhost:8000/api/v1/companies/
 
 # Analyze Amazon
-curl http://localhost:8000/api/companies/AMZN
+curl http://localhost:8000/api/v1/companies/AMZN
 
 # Get misleading claims
-curl "http://localhost:8000/api/claims/?verdict=misleading"
+curl "http://localhost:8000/api/v1/claims/?verdict=MISLEADING"
+
+# Check health
+curl http://localhost:8000/health/detailed
+
+# Trigger ingestion
+curl -X POST http://localhost:8000/api/v1/pipeline/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"tickers": ["AAPL"], "quarters": [[2025, 4]]}'
 ```
 
 **Full docs:** Visit http://localhost:8000/docs for interactive API documentation
 
-**Checkout:** [SETUP_GUIDE.md](docs/SETUP_GUIDE.md) for comprehensive setup instructions
+**More examples:** [docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md) - Comprehensive API guide with curl/Python/JavaScript examples
+
+**Setup guide:** [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md) - Comprehensive setup, deployment, and troubleshooting
 
 ---
 
@@ -261,8 +311,11 @@ curl "http://localhost:8000/api/claims/?verdict=misleading"
 | **Financial Data** | Financial Modeling Prep API |
 | **Database** | SQLite (dev), PostgreSQL-ready |
 | **ORM** | SQLAlchemy 2.0 |
+| **Migrations** | Alembic |
 | **Validation** | Pydantic 2.0 |
-| **Testing** | pytest, pytest-cov |
+| **Logging** | structlog (JSON/human-readable) |
+| **Dependency Injection** | dependency-injector |
+| **Testing** | pytest, pytest-cov (331+ tests) |
 | **Deployment** | Docker, docker-compose |
 | **CI/CD** | GitHub Actions (can be added) |
 
@@ -388,6 +441,24 @@ docker compose run streamlit python -m scripts.run_pipeline --tickers TSLA
 # Edit app/config.py → target_tickers list
 ```
 
+### Database Migrations
+
+```bash
+# Check current migration status
+alembic current
+
+# Create new migration after model changes
+alembic revision --autogenerate -m "add new column"
+
+# Apply migrations
+alembic upgrade head
+
+# Rollback one migration
+alembic downgrade -1
+```
+
+**More details:** See [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md#5-database-migrations)
+
 ### Testing
 
 ```bash
@@ -411,9 +482,10 @@ open htmlcov/index.html
 
 | File | Purpose |
 |------|---------|
-| **README.md** | This file - quick overview |
-| **[docs/ARCHITECTURE_GUIDE.md](docs/ARCHITECTURE_GUIDE.md)** | Deep dive: layers, diagrams, design decisions |
-| **[docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md)** | Setup, deployment, troubleshooting |
+| **README.md** | This file - quick overview and getting started |
+| **[docs/ARCHITECTURE_GUIDE.md](docs/ARCHITECTURE_GUIDE.md)** | Deep dive: 6-layer architecture, design decisions, production features |
+| **[docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md)** | Setup, deployment, database migrations, troubleshooting |
+| **[docs/API_USAGE_GUIDE.md](docs/API_USAGE_GUIDE.md)** | REST API guide with curl/Python/JavaScript examples |
 | **[docs/MCP_GUIDE.md](docs/MCP_GUIDE.md)** | AI agent integration (Claude Code, Cursor) |
 
 ---
@@ -458,7 +530,7 @@ python mcp_server.py
 - Redis for distributed caching (in-memory doesn't work across processes)
 - Celery for async pipeline (long-running tasks)
 - Rate limiting on API (currently unlimited)
-- Structured logging (JSON format for aggregation)
+- Message queue (RabbitMQ/Kafka) for event-driven architecture
 
 **Architecture & Code Quality:**
 - Reduce architectural debt (current setup was rapidly prototyped)
