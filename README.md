@@ -4,6 +4,8 @@
 
 Executives make 30-50 quantitative claims per earnings call. This system extracts them via LLM, verifies against SEC data, and detects patterns of misleading communication.
 
+**🔗 [Live Demo](https://claim-auditor.streamlit.app/)** • **🎥 [Demo Video](https://youtu.be/coming-soon)** *(Coming soon!)*
+
 ---
 
 ## Problem & Solution
