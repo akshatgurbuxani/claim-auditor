@@ -12,7 +12,6 @@ from app.domain.scoring import accuracy_score
 from app.domain.verdicts import assign_verdict
 from app.engines.metric_mapper import MetricMapper
 from app.models.claim import ClaimModel
-from app.models.financial_data import FinancialDataModel
 from app.repositories.financial_data_repo import FinancialDataRepository
 from app.schemas.verification import MisleadingFlag, Verdict, VerificationCreate
 from app.utils.financial_math import normalize_to_unit, percentage_difference

@@ -48,6 +48,24 @@ app.include_router(claims.router, prefix="/api/claims", tags=["claims"])
 app.include_router(pipeline.router, prefix="/api/pipeline", tags=["pipeline"])
 
 
+@app.get("/")
+def root():
+    """Root endpoint - redirect to interactive docs."""
+    return {
+        "service": "Claim Auditor API",
+        "version": "1.0.0",
+        "status": "running",
+        "docs": "/docs",
+        "health": "/health",
+        "endpoints": {
+            "companies": "/api/companies/",
+            "claims": "/api/claims/",
+            "transcripts": "/api/transcripts/",
+            "pipeline": "/api/pipeline/status"
+        }
+    }
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "claim-auditor"}

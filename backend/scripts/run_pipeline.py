@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Run the claim auditor pipeline: ingest → extract → verify → analyze.
 
-Usage:
+Usage with Docker (recommended):
+    docker compose run streamlit python -m scripts.run_pipeline
+    docker compose run streamlit python -m scripts.run_pipeline --step ingest
+    docker compose run streamlit python -m scripts.run_pipeline --tickers AAPL MSFT
+
+Usage locally:
     python -m scripts.run_pipeline                    # run all steps, all tickers
     python -m scripts.run_pipeline --step ingest      # only fetch from FMP
     python -m scripts.run_pipeline --step extract     # only run Claude extraction

@@ -7,7 +7,7 @@ from app.database import get_db
 from app.dependencies import get_analysis_service
 from app.repositories.claim_repo import ClaimRepository
 from app.repositories.company_repo import CompanyRepository
-from app.schemas.company import Company, CompanyWithStats
+from app.schemas.company import CompanyWithStats
 from app.schemas.discrepancy import CompanyAnalysis
 from app.utils.scoring import compute_verdict_counts, compute_accuracy, compute_trust_score
 

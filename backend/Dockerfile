@@ -9,7 +9,8 @@ COPY . .
 
 RUN mkdir -p data
 
-ENV PORT=8501
+# Don't set PORT here - let docker-entrypoint.sh defaults handle it
+# (8501 for streamlit, 8000 for api)
 ENV MODE=streamlit
 
 EXPOSE 8501 8000

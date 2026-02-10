@@ -1,7 +1,12 @@
 """Claim Auditor — Streamlit UI.
 
-Run:
+Run with Docker (recommended):
+    docker compose up streamlit
+
+Run locally:
     streamlit run streamlit_app.py --server.port 8501
+
+Access: http://localhost:8501
 """
 
 import sys

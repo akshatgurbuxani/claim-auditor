@@ -86,6 +86,7 @@ class FMPClient(BaseHTTPClient):
         if not content:
             return None
 
+        logger.info("FMP transcript fetched for %s Q%d %d: %s", ticker, quarter, year, content[:120])
         return FMPTranscript(
             ticker=ticker.upper(),
             quarter=quarter,
