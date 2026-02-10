@@ -97,7 +97,14 @@ class IngestionService:
         summary["companies"] += 1
         logger.info("Processing %s (%s)", company.ticker, company.name)
 
-        # 2. Transcripts — three-tier fallback: FMP → local file → LLM generation
+        # 2. Financial data — fetch heavy structured data FIRST (needed for LLM generation)
+        if self.financials.count_for_company(company.id) > 0:
+            logger.info("  Financial data already exists, skipping FMP fetch")
+        else:
+            self._ingest_financials(company, summary)
+
+        # 3. Transcripts — three-tier fallback: FMP → local file → LLM generation
+        # NOTE: This step comes AFTER financial data so LLM generation can use DB data
         for year, quarter in quarters:
             existing = self.transcripts.get_for_quarter(company.id, year, quarter)
             if existing:
@@ -111,7 +118,7 @@ class IngestionService:
             if transcript is None:
                 transcript = self._load_local_transcript(ticker, quarter, year)
 
-            # Tier 3: Generate with LLM using financial data
+            # Tier 3: Generate with LLM using financial data from DB
             if transcript is None:
                 transcript = self._generate_transcript_with_llm(
                     company, ticker, quarter, year
@@ -133,17 +140,15 @@ class IngestionService:
             else:
                 logger.warning("  No transcript for Q%d %d", quarter, year)
 
-        # 3. Financial data — skip entirely if we already have rows for this company
-        if self.financials.count_for_company(company.id) > 0:
-            logger.info("  Financial data already exists, skipping FMP fetch")
-        else:
-            self._ingest_financials(company, summary)
-
     def _ingest_financials(self, company, summary: dict) -> None:
         """Fetch income, cash-flow, balance-sheet and merge by period."""
         income = self.fmp.get_income_statement(company.ticker, limit=5)
         cashflow = self.fmp.get_cash_flow_statement(company.ticker, limit=5)
         balance = self.fmp.get_balance_sheet(company.ticker, limit=5)
+
+        if not income:
+            logger.warning(f"No income statement data for {company.ticker}")
+            return
 
         for entry in income:
             q, y = self._parse_period(entry)
@@ -209,6 +214,8 @@ class IngestionService:
 
     @staticmethod
     def _match(entries: List[Dict], year: int, quarter: int) -> Optional[Dict]:
+        if not entries:
+            return None
         for e in entries:
             q, y = IngestionService._parse_period(e)
             if q == quarter and y == year:
