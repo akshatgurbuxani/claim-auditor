@@ -5,7 +5,7 @@
 Executives say a lot of things on earnings calls. Some of it is accurate. Some of it is misleading. We want to know the difference. We've build a system that analyzes earnings call transcripts, extracts quantitative claims made by management, and verifies them against actual financial data.
 
 **🔗 [Live Demo](https://claim-auditor.streamlit.app/)**\
-**🎥 [Demo Video](https://youtu.be/coming-soon)** *(Coming soon!)*
+**🎥 [Demo Video]([https://youtu.be/coming-soon](https://www.loom.com/share/d541736c5e78468d9d4782286620b7f5))**
 
 ---
 
